@@ -694,6 +694,16 @@ const char *bvm_slot_digest(int k)
     return k >= 2 && k < NSLOT && s_cls[k].vm ? s_cls[k].digest : "";
 }
 
+int bvm_slot_of(const char *digest)   // without the lock, as above: only the device server changes slots
+{
+    for (int k = 2; k < NSLOT && digest && digest[0]; k++) {
+        if (s_cls[k].vm && strcmp(s_cls[k].digest, digest) == 0) {
+            return k;
+        }
+    }
+    return -1;
+}
+
 int bvm_model_check(int k, int inst, char *model, size_t n, int *count)
 {
     model[0] = 0;

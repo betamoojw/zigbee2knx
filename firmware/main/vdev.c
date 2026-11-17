@@ -17,6 +17,7 @@
 // The template comes with the download: a product carries it signed behind its parameters (kgt.c). Once checksum
 // and signature are verified it runs in a VM of its own. A segment without a template falls back to the class built
 // into the firmware for that application number (C001, C002; FE20, FE21 before). A refused template changes nothing.
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,7 @@
 #include "esp_mac.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "psa/crypto.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -51,6 +53,7 @@ static const char *TAG = "vdev";
 #define BIG4_BASE    0x8000u      // a parameter segment above 1 KiB (embedded template)
 #define BIG4_SIZE    0x4000u
 #define MAX_APDU_DEF 15           // PID 56 by default: memory services carry up to 12 data octets, standard frames only
+#define PROP_MAX     (KNX_TPDU_MAX - 6)   // data octets of a property value answer: PID 56 - 5 at most
 #define ACK_US       3000000      // T_ACK timeout
 // Programming mode ends by itself after this, however it was switched on, and setting it again does not start the time
 // anew (03_05_01 Resources 4.26.1, "Autonomous inactivation of Programming Mode": optional, 4 minutes). A virtual
@@ -61,9 +64,11 @@ static const char *TAG = "vdev";
 #define SAVE_QUIET_US 1500000     // flash is written while our own traffic is quiet for this long ...
 #define SAVE_LATE_US  30000000    // ... but a change waits no longer than this once its device has no connection
 #define SAVE_HARD_US  180000000   // ... and never longer than this
-#define SAVE_RETRY_US 10000000    // after a write that failed
+#define SAVE_RETRY_US 10000000    // after a write that failed; twice as long after each further one, up to 64 times
+#define APPLY_RETRY_US 30000000   // a template that could not be checked or loaded for want of memory, again after this
 #define SEG_BUDGET    (96u * 1024u)   // RAM all segments together may take
 #define SEG_KEEP_US   60000000    // an unloaded object keeps its content this long for the allocation that follows
+#define LOST_MAX     3            // a status value the link gave up goes out again at most this often
 #define PARAMS_MAX   88           // parameter octets that fit into one request line to Berry
 #define NVS_PART     BOARD_DEVSRV_PART   // "devsrv" on the TUL32, "actor_db" on the TULX32 (board.h)
 #define REC_MAGIC    0x33564456u  // "VDV3": the template behind the parameters may be kept apart (s_ts)
@@ -96,6 +101,7 @@ typedef struct {
     bool used, prog, dirty;
     int64_t prog_until;                // programming mode ends by itself then (PROG_US after it was switched on)
     int64_t dirty_since, save_after;   // when the unsaved change began; no write before save_after (after an error)
+    uint8_t save_fails;                // writes of its record that failed one after the other (the storage's fault)
     uint16_t ia;
     uint8_t device_control, serial[6];
     lobj_t lo[6];                  // 1..5: address table, association table, group object table, application, PEI
@@ -117,12 +123,19 @@ typedef struct {
                                    // reads Error until the next download or start (RAM only)
     bool next_tpl;                 // the check at LoadCompleted found a template, next_digest is its content
     char next_digest[17];
+    uint16_t next_params;          // ... and the parameter octets it takes
+    bool app_leaving;              // the application ETS had loaded was unloaded or is being replaced (app_gone())
+    int64_t retry_at;              // apply() again then: its template could not be checked for want of memory
     uint16_t zaddr;                // Zigbee short address, ZADDR_NONE = none
     uint8_t zep;
     struct {
-        bool have, unsent;         // unsent: the link had no room for this value yet
+        uint8_t have : 1, unsent : 1;   // unsent: the link had no room for this value yet
+        uint8_t status : 1;             // the class gave it as a status: the same value may go out twice
+        uint8_t lost : 2;               // times the link gave this value up and it went out again (LOST_MAX)
         uint8_t len, v[KNX_KO_VAL];
     } ko[KO_MAX + 1];
+    uint8_t resp_ko;               // an answer to a read the link had no room for: its object, 0 none ...
+    uint16_t resp_ga;              // ... and the group address the read came on
     uint32_t rx, tx, grp_rx, grp_tx, unhandled, mem_wr, mem_wr_octets, mem_rejected;
 } vdev_t;
 
@@ -145,22 +158,27 @@ typedef struct __attribute__((packed)) {
 #define REC2_SIZE (sizeof(rec_t) - 12)
 #define REC1_SIZE (REC2_SIZE - 8)
 
-enum { EV_FRAME, EV_KO };
+// Two queues into the device server's task: frames from the link, which the link may have acknowledged already, and
+// values from the classes, which come in bursts (a central command to all lamps). A burst of values does not push out
+// frames, and the other way round.
+#define FRAME_Q 24   // frames: more than TP1 carries while the task is busy with one group telegram to 32 devices
+#define VALUE_Q 64   // class values: 32 lamps answering a central command with two status values each
+enum { EV_FRAME, EV_LOST };   // EV_LOST: a frame of ours the link gave up (knx_link_lost)
 typedef struct {
     uint8_t type;
-    union {
-        knx_frame_t f;
-        struct {
-            int16_t inst;
-            uint8_t ko, len, v[KNX_KO_VAL];
-            bool initial, status;
-        } ko;
-    };
+    knx_frame_t f;
 } ev_t;
+typedef struct {
+    int16_t inst;
+    uint8_t ko, len, v[KNX_KO_VAL];
+    bool initial, status;
+} kv_t;
 
 static vdev_t s_d[NDEV];
 static SemaphoreHandle_t s_mx;
-static QueueHandle_t s_q;
+static QueueHandle_t s_q, s_kq;    // frames (ev_t), class values (kv_t)
+static TaskHandle_t s_task;
+static volatile uint8_t s_q_peak, s_kq_peak;   // the most entries that waited at once (console vdev)
 static nvs_handle_t s_nvs;
 static bool s_nvs_ok;
 static int64_t s_last_rx;          // last frame that was meant for one of our devices
@@ -168,10 +186,10 @@ static bool s_v8_blocked;          // the gateway's old record "v8" is not moved
 static bool s_hit;                 // set while a frame is dispatched: one of our devices took it
 static volatile uint8_t s_test_refuse;   // console tplfail: the next check at LoadCompleted fails with this
 // PID 56 (max APDU length) of every device: ETS writes memory in pieces of this minus 3 octets. Above 15 the pieces
-// come in extended frames, up to 63 data octets (KNX_TPDU_MAX - 1 = 66). Console `apdu`, RAM only: a start goes back
-// to the default, whatever ETS does with a longer one.
+// come in extended frames, up to 63 data octets (KNX_TPDU_MAX - 1 = 66). The gateway's parameter LongFrames sets it at
+// every start and every restart of the gateway's device (gw.c); the console `apdu` overrides it until then.
 static uint8_t s_max_apdu = MAX_APDU_DEF;
-static uint32_t s_ev_lost, s_saves, s_save_errs;
+static uint32_t s_ev_lost, s_kv_lost, s_saves, s_save_errs;   // frames / class values dropped: queue full
 
 // class 0 zigbee-dimmable-light (application C001), class 1 zigbee-white-spectrum-light (C002): order info (PID 15),
 // octets of application parameters at the start of the parameter segment
@@ -276,12 +294,18 @@ typedef struct {
     uint32_t len, crc;
     uint16_t refs;
     bool saved;                    // the blob ts_key() holds it
+    // The template these octets carry passed the checks once (kgt.c): its content digest, "" not yet, and the parameter
+    // octets it takes. Nobody writes into a kept part (seg_own() copies it first), so the result holds for its life.
+    char digest[17];
+    uint16_t params;
 } tshare_t;
 
 static tshare_t s_ts[NDEV];
 static struct {
     uint32_t len, crc;
-} s_tref[NDEV];                    // what the records named at the start, restored or not: not to be deleted
+} s_tref[NDEV];                    // the template part the stored record of each slot names (len 0: none); from the
+                                   // start on, restored or not, then kept up with every record written or erased
+static bool s_swept;               // every record was read at the start: a part no record names may go from now on
 
 // The record of slot i: "v<i>", the gateway's "vgw". Earlier firmware gave the gateway "v8", after the 8 slots it
 // had; with more slots that is a virtual device's key (gw_key_move()).
@@ -326,7 +350,7 @@ static int ts_take(const uint8_t *p, uint32_t n, uint32_t crc, bool saved)
     return free_i;
 }
 
-static void ts_drop(int i)   // the blob stays until the next start (vdev_start): a record may still name it
+static void ts_drop(int i)   // RAM only: the blob goes when no stored record names it any more (tref_set())
 {
     if (i >= 0 && i < NDEV && s_ts[i].refs && --s_ts[i].refs == 0) {
         free(s_ts[i].data);
@@ -444,6 +468,18 @@ static void seg_share(vdev_t *d)
              (unsigned)n, (unsigned)s_ts[i].refs, (unsigned)at);
 }
 
+// The template in object 4's kept part passed the checks (at LoadCompleted or when it was brought up): remembered at
+// the part, so that the next restart need not check the same octets again (23 to 43 KB of heap each time)
+static void tpl_checked(vdev_t *d, const char *digest, uint16_t params)
+{
+    lobj_t *o = &d->lo[4];
+    if (o->ts1 && digest && digest[0]) {
+        tshare_t *t = &s_ts[o->ts1 - 1];
+        snprintf(t->digest, sizeof t->digest, "%s", digest);
+        t->params = params;
+    }
+}
+
 // ---------------------------------------------------------------- tables (valid only while the object is Loaded)
 static int words(vdev_t *d, int obj, const uint8_t **p)
 {
@@ -513,12 +549,14 @@ static int go_octets(int type)
 }
 
 static volatile bool s_vprog;   // a virtual device is in programming mode (publish() keeps it)
+static int s_ga_over;           // group addresses the link did not take at the last publish()
 
 // ---------------------------------------------------------------- acknowledge lists for the link
 static void publish(void)
 {
     static uint16_t ia[KNX_ACK_IA_MAX], ga[KNX_ACK_GA_MAX];
     int nia = 0, nga = 0, over = 0;
+    uint16_t over_ia = 0xFFFF;   // the first device whose group addresses did not all fit
     bool any = false, vprog = false;
     for (int i = 0; i < NDEV; i++) {
         vdev_t *d = &s_d[i];
@@ -542,23 +580,103 @@ static void publish(void)
                 if (nga < KNX_ACK_GA_MAX) {
                     ga[nga++] = x;
                 } else {
+                    over_ia = over ? over_ia : d->ia;
                     over++;
                 }
             }
         }
     }
-    if (over) {
-        ESP_LOGW(TAG, "more than %d different group addresses: %d are not acknowledged", KNX_ACK_GA_MAX, over);
+    // Frames to the others still reach the devices, but nothing here acknowledges them: a sender without another
+    // listener on the line repeats each three times and counts it as failed. Told on the gateway's message object
+    // when it grows (the download that brought the address too many), not at every publish.
+    if (over > s_ga_over) {
+        char why[96];
+        snprintf(why, sizeof why, "%d group addresses more than the %d the link acknowledges", over, KNX_ACK_GA_MAX);
+        ESP_LOGW(TAG, "%s", why);
+        gw_note(GW_NOTE_GROUPS, over_ia, 0, why);
     }
+    s_ga_over = over;
     s_vprog = vprog;   // for the gateway's LED
     knx_link_ack_lists(ia, nia, ga, nga, any);
 }
 
 // ---------------------------------------------------------------- persistence
+// NVS entries a blob of n octets may take: 32 octets each, a header for every chunk (a chunk ends with its page of 126
+// entries, the first starts anywhere) and the blob's index, plus the tail of a page NVS closes when the first chunk does
+// not fit there (nvs_storage.cpp, writeMultiPageBlob: less than the blob, at most a tenth of a page).
+static size_t nvs_need(size_t n)
+{
+    size_t chunks = n / 4000 + 2;
+    return (n + 31) / 32 + 2 * chunks + 1 + ((n < 400 ? n : 400) + 31) / 32;
+}
+
+// Is there room for a blob of n octets? NVS does not ask before it writes: it writes what fits of a blob, marks that as
+// erased again when the rest does not, and gets the space back only by erasing a page. A new blob is written whole
+// before the old one of its key goes. Not known (no statistics): NVS itself decides.
+static bool room(size_t n)
+{
+    nvs_stats_t st;
+    return nvs_get_stats(NVS_PART, &st) != ESP_OK || nvs_need(n) <= st.available_entries;
+}
+
+// No stored record names this template part any more: its blob goes now, not at the next start. A copy in RAM is
+// written again before the next record that names it. Before every record was read at the start, ts_sweep() decides.
+static void ts_unnamed(uint32_t crc, uint32_t len)
+{
+    if (!len || !s_swept || !s_nvs_ok) {
+        return;
+    }
+    for (int i = 0; i < NDEV; i++) {
+        if (s_tref[i].len == len && s_tref[i].crc == crc) {
+            return;
+        }
+    }
+    char k[16];
+    ts_key(crc, len, k);
+    if (nvs_erase_key(s_nvs, k) == ESP_OK) {
+        nvs_commit(s_nvs);
+        ESP_LOGI(TAG, "template part %s: no record names it any more, deleted", k);
+    }
+    for (int i = 0; i < NDEV; i++) {
+        if (s_ts[i].refs && s_ts[i].crc == crc && s_ts[i].len == len) {
+            s_ts[i].saved = false;
+        }
+    }
+}
+
+static void tref_set(int i, uint32_t crc, uint32_t len)   // the stored record of slot i names this part now (len 0: none)
+{
+    uint32_t oc = s_tref[i].crc, ol = s_tref[i].len;
+    s_tref[i].crc = crc;
+    s_tref[i].len = len;
+    if (ol && (ol != len || oc != crc)) {
+        ts_unnamed(oc, ol);
+    }
+}
+
+// A record (or the template part it needs) did not get into the flash: the change stays in RAM and is tried again,
+// each time later (10 s, then twice as long up to 640 s: a full partition stays full, and every failed write of a blob
+// costs erase cycles). The first failure of a series goes to the gateway's message object; its fault stays on while
+// any record waits (vdev_store_failing()).
+static void store_failed(vdev_t *d, int64_t now, const char *why)
+{
+    s_save_errs++;
+    if (d->save_fails < 255) {
+        d->save_fails++;
+    }
+    int64_t wait = (int64_t)SAVE_RETRY_US << (d->save_fails - 1 < 6 ? d->save_fails - 1 : 6);
+    d->save_after = now + wait;
+    ESP_LOGE(TAG, "dev %d: %s; tried again in %d s", slot(d), why, (int)(wait / 1000000));
+    if (d->save_fails == 1) {
+        gw_note(GW_NOTE_STORE, d->ia, 0, why);
+    }
+}
+
 static void save(vdev_t *d)
 {
     int64_t now = esp_timer_get_time();
-    if (!s_nvs_ok) {
+    char why[96];
+    if (!s_nvs_ok) {   // nothing to keep it in: vdev_store_failing() makes that the gateway's fault
         d->dirty = false;
         return;
     }
@@ -566,23 +684,22 @@ static void save(vdev_t *d)
     // blob nobody names, which the next start deletes)
     lobj_t *o4 = &d->lo[4];
     bool apart = o4->state == LS_LOADED && o4->ts1 && o4->size > o4->at;
+    tshare_t *ts = apart ? &s_ts[o4->ts1 - 1] : NULL;
     esp_err_t e = ESP_OK;
-    if (apart && !s_ts[o4->ts1 - 1].saved) {
-        tshare_t *t = &s_ts[o4->ts1 - 1];
+    if (ts && !ts->saved) {
         char tk[16];
-        ts_key(t->crc, t->len, tk);
-        e = nvs_set_blob(s_nvs, tk, t->data, t->len);
+        ts_key(ts->crc, ts->len, tk);
+        e = room(ts->len) ? nvs_set_blob(s_nvs, tk, ts->data, ts->len) : ESP_ERR_NVS_NOT_ENOUGH_SPACE;
         if (e == ESP_OK) {
             e = nvs_commit(s_nvs);
         }
         if (e != ESP_OK) {
-            s_save_errs++;
-            d->save_after = now + SAVE_RETRY_US;
-            ESP_LOGE(TAG, "dev %d: saving the template part (%u B) failed: %s, trying again later", slot(d),
-                     (unsigned)t->len, esp_err_to_name(e));
+            snprintf(why, sizeof why, "its template part (%u B) does not get into the flash: %s", (unsigned)ts->len,
+                     e == ESP_ERR_NVS_NOT_ENOUGH_SPACE ? "partition full" : esp_err_to_name(e));
+            store_failed(d, now, why);
             return;
         }
-        t->saved = true;
+        ts->saved = true;
     }
     size_t n = sizeof(rec_t);
     for (int o = 1; o <= 5; o++) {
@@ -625,32 +742,55 @@ static void save(vdev_t *d)
     memcpy(b, &r, sizeof r);
     char key[12];
     rec_key(slot(d), key);
-    e = nvs_set_blob(s_nvs, key, b, n);
+    e = room(n) ? nvs_set_blob(s_nvs, key, b, n) : ESP_ERR_NVS_NOT_ENOUGH_SPACE;
     if (e == ESP_OK) {
         e = nvs_commit(s_nvs);
     }
     free(b);
     s_saves++;
     if (e != ESP_OK) {   // stays unsaved and is tried again
-        s_save_errs++;
-        d->save_after = now + SAVE_RETRY_US;
-        ESP_LOGE(TAG, "dev %d: saving %u B failed: %s, trying again later", slot(d), (unsigned)n, esp_err_to_name(e));
+        snprintf(why, sizeof why, "its record (%u B) does not get into the flash: %s", (unsigned)n,
+                 e == ESP_ERR_NVS_NOT_ENOUGH_SPACE ? "partition full" : esp_err_to_name(e));
+        store_failed(d, now, why);
     } else {
+        if (d->save_fails) {
+            ESP_LOGI(TAG, "dev %d: saved after %u failed writes", slot(d), d->save_fails);
+        }
+        d->save_fails = 0;
         d->dirty = false;
         ESP_LOGI(TAG, "dev %d: saved, %u B", slot(d), (unsigned)n);
+        // the part the record named before goes if no other record names it: nothing else frees its flash
+        tref_set(slot(d), ts ? ts->crc : 0, ts ? ts->len : 0);
     }
 }
 
-static void serial_of(int i, uint8_t out[6])
+// The KNX serial number (PID 11): 00FA and the first four octets of SHA-256 over the IEEE address of the Zigbee device
+// behind the virtual device, the 8 octets as its record keeps them. It follows the Zigbee device, not the slot: the
+// next device in a slot that was freed got the same number before, and ETS addresses by serial number. The gateway:
+// over its base MAC. A virtual device without an IEEE address (set up by hand) keeps the earlier scheme: the last three
+// octets of the base MAC and the slot. Derived whenever the address changes, never stored.
+static void serial_of(vdev_t *d)
 {
-    uint8_t mac[6] = {0};
+    static bool psa_up;
+    int i = slot(d);
+    uint8_t mac[6] = {0}, h[32];
+    size_t got = 0;
     esp_read_mac(mac, ESP_MAC_BASE);
-    out[0] = MANUFACTURER >> 8;
-    out[1] = MANUFACTURER & 0xFF;
-    out[2] = mac[3];
-    out[3] = mac[4];
-    out[4] = mac[5];
-    out[5] = i == GW ? 0 : (uint8_t)(i + 1);   // the gateway ...00, its virtual devices ...01 up
+    d->serial[0] = MANUFACTURER >> 8;
+    d->serial[1] = MANUFACTURER & 0xFF;
+    const uint8_t *in = i == GW ? mac : d->have_ieee ? d->ieee : NULL;
+    if (in && !psa_up) {
+        psa_up = psa_crypto_init() == PSA_SUCCESS;
+    }
+    if (in && psa_up && psa_hash_compute(PSA_ALG_SHA_256, in, i == GW ? 6 : 8, h, sizeof h, &got) == PSA_SUCCESS &&
+        got == sizeof h) {
+        memcpy(d->serial + 2, h, 4);
+        return;
+    }
+    d->serial[2] = mac[3];
+    d->serial[3] = mac[4];
+    d->serial[4] = mac[5];
+    d->serial[5] = i == GW ? 0 : (uint8_t)(i + 1);
 }
 
 static void init_dev(vdev_t *d)
@@ -666,7 +806,7 @@ static void init_dev(vdev_t *d)
     d->k = -1;
     d->zaddr = ZADDR_NONE;
     d->zep = 1;
-    serial_of(i, d->serial);
+    serial_of(d);
     for (int o = 1; o <= 5; o++) {
         d->lo[o].run_state = 1;
     }
@@ -763,6 +903,7 @@ static bool restore(int i)
     d->cap_known = r.flags & 4;
     d->rx_on = r.flags & 8;
     memcpy(d->ieee, r.ieee, 8);
+    serial_of(d);
     const uint8_t *p = b + head;
     bool lost = false;   // the template part the record names is missing or damaged
     for (int o = 1; o <= 5; o++) {
@@ -966,16 +1107,37 @@ static void halt(vdev_t *d)   // the device runs no class; a VM nobody uses any 
     d->k = -1;
     d->model_ok = 0;
     d->reparam = false;
+    // What the class said is not the device's state any more: a read gets no answer until a class says it anew
+    // (it was answered with the last value of the class that stopped)
+    memset(d->ko, 0, sizeof d->ko);
     bvm_keep(slots_in_use());
+}
+
+// The application ETS had loaded was unloaded, or a download of it broke off: when the connection ends, or the device
+// restarts, with object 4 not loaded again, the class stops, as any KNX device stops an application it does not have.
+// Not at the Unload itself: a partial download unloads and loads again within one connection.
+static void app_gone(vdev_t *d)
+{
+    if (!d->app_leaving || d->lo[4].state == LS_LOADED) {
+        return;
+    }
+    d->app_leaving = false;
+    if (!is_gw(d) && d->k >= 0) {
+        ESP_LOGI(TAG, "dev %d: its application is not loaded any more: the class stops", slot(d));
+        halt(d);
+    }
 }
 
 // The application ETS loaded does not run as loaded: the device runs no class, and its load state reads Error with
 // err until the next download or start. ETS shows it in the device info; the gateway tells it as well.
 static void fault(vdev_t *d, uint8_t err, const char *why)
 {
+    uint8_t was = d->fault;
     d->fault = err ? err : KNX_ERR_SOFTWARE;
     halt(d);
-    gw_note(GW_NOTE_FAULT, d->ia, d->fault, why);
+    if (d->fault != was) {   // a retry that fails the same way tells nothing new
+        gw_note(GW_NOTE_FAULT, d->ia, d->fault, why);
+    }
 }
 
 // LoadCompleted of the application: would it come up? ETS reads the answer to this load event, so what the gateway
@@ -1000,7 +1162,7 @@ static uint8_t precheck(vdev_t *d, char *why, size_t wn)
                      o->pv[1], o->pv[2], o->pv[3], MANUFACTURER, GW_APP);
             return KNX_ERR_CONFIG;
         }
-        return 0;
+        return gw_params_check(o->seg, o->size, d->ia, why, wn);   // its segment is never kept apart (seg_share)
     }
     if (ours && app == GW_APP) {
         snprintf(why, wn, "application %04x is the gateway's own; it belongs into the gateway", GW_APP);
@@ -1043,6 +1205,7 @@ static uint8_t precheck(vdev_t *d, char *why, size_t wn)
     }
     d->next_tpl = true;
     snprintf(d->next_digest, sizeof d->next_digest, "%s", ti.digest);
+    d->next_params = (uint16_t)ti.params;
     return 0;
 }
 
@@ -1083,29 +1246,54 @@ static void apply(vdev_t *d)
         halt(d);
     }
     d->next_tpl = false;
+    d->retry_at = 0;
     kgt_info_t ti;
     char why[112];
-    uint8_t *flat = o->seg;   // the check needs the segment in one piece: put a kept template part behind it
-    if (o->ts1) {
-        flat = malloc(o->size);
-        if (!flat) {
+    int params, k;
+    tshare_t *part = o->ts1 ? &s_ts[o->ts1 - 1] : NULL;
+    // The template part passed the checks before and its VM runs: the same octets carry the same template, nothing to
+    // check again. Every restart (a partial download of the tables included) checked it anew before, with 23 to 43 KB of
+    // heap, and a check that found no memory then left a device that ran well without its class.
+    int running = part && part->digest[0] ? bvm_slot_of(part->digest) : -1;
+    if (running >= 2) {
+        k = running;
+        memset(&ti, 0, sizeof ti);
+        ti.params = part->params;
+        snprintf(ti.digest, sizeof ti.digest, "%s", part->digest);
+    } else {
+        uint8_t *flat = o->seg;   // the check needs the segment in one piece: put a kept template part behind it
+        if (o->ts1) {
+            flat = malloc(o->size);
+            if (!flat) {
+                d->tpl = 2;
+                ESP_LOGE(TAG, "dev %d: no memory (%u B) to check the template, nothing loaded; tried again in %d s",
+                         slot(d), (unsigned)o->size, APPLY_RETRY_US / 1000000);
+                fault(d, KNX_ERR_NO_RAM, "no memory to check the template");
+                d->retry_at = esp_timer_get_time() + APPLY_RETRY_US;
+                return;
+            }
+            seg_read(o, 0, flat, o->size);
+        }
+        k = bvm_template(flat, o->size, &ti, why, sizeof why);
+        if (flat != o->seg) {
+            free(flat);
+        }
+        if (k == BVM_REFUSED) {
             d->tpl = 2;
-            ESP_LOGE(TAG, "dev %d: no memory (%u B) to check the template, nothing loaded", slot(d), (unsigned)o->size);
-            fault(d, KNX_ERR_NO_RAM, "no memory to check the template");
+            // No memory says nothing about the template: it is tried again, while a refused content waits for ETS
+            bool again = ti.err == KNX_ERR_NO_RAM;
+            ESP_LOGW(TAG, "dev %d: embedded template REFUSED: %s. Nothing loaded, parameters not applied, the device runs "
+                     "no class (checked in %u ms)%s", slot(d), why, (unsigned)(ti.us / 1000),
+                     again ? "; tried again in 30 s" : "");
+            fault(d, ti.err, why);
+            if (again) {
+                d->retry_at = esp_timer_get_time() + APPLY_RETRY_US;
+            }
             return;
         }
-        seg_read(o, 0, flat, o->size);
-    }
-    int params, k = bvm_template(flat, o->size, &ti, why, sizeof why);
-    if (flat != o->seg) {
-        free(flat);
-    }
-    if (k == BVM_REFUSED) {
-        d->tpl = 2;
-        ESP_LOGW(TAG, "dev %d: embedded template REFUSED: %s. Nothing loaded, parameters not applied, the device runs "
-                 "no class (checked in %u ms)", slot(d), why, (unsigned)(ti.us / 1000));
-        fault(d, ti.err, why);
-        return;
+        if (k >= 2) {
+            tpl_checked(d, ti.digest, (uint16_t)ti.params);
+        }
     }
     bool tpl = k != BVM_NO_TEMPLATE;
     if (!tpl) {
@@ -1132,9 +1320,14 @@ static void apply(vdev_t *d)
             fault(d, KNX_ERR_CONFIG, "the template takes more parameter octets than fit into a request");
             return;
         }
-        ESP_LOGI(TAG, "dev %d: embedded template %s in slot %d: digest %s, signed by %s, %u characters -> %u B "
-                 "compressed -> %u B, checked in %u ms", slot(d), bvm_slot_name(k), k, ti.digest, ti.fpr,
-                 (unsigned)ti.text_len, (unsigned)ti.z, (unsigned)ti.payload, (unsigned)(ti.us / 1000));
+        if (running >= 2) {
+            ESP_LOGI(TAG, "dev %d: embedded template %s in slot %d: digest %s, checked before and running, not checked "
+                     "again", slot(d), bvm_slot_name(k), k, ti.digest);
+        } else {
+            ESP_LOGI(TAG, "dev %d: embedded template %s in slot %d: digest %s, signed by %s, %u characters -> %u B "
+                     "compressed -> %u B, checked in %u ms", slot(d), bvm_slot_name(k), k, ti.digest, ti.fpr,
+                     (unsigned)ti.text_len, (unsigned)ti.z, (unsigned)ti.payload, (unsigned)(ti.us / 1000));
+        }
     }
     if (zlink_set(d->inst, k, d->zaddr, d->zep) != 0) {
         ESP_LOGE(TAG, "dev %d: linking instance %d failed", slot(d), d->inst);
@@ -1144,6 +1337,9 @@ static void apply(vdev_t *d)
     // Unknown (records of earlier development versions, an announce that was lost): a remote is a sleepy end
     // device, the rest keeps its receiver on. The interview's node descriptor tells it later.
     zlink_sleepy(d->inst, d->cap_known ? !d->rx_on : our_app(d) == 0xC004);
+    if (d->gone) {   // its Zigbee device left the network: off, and not asked at an address another may have now
+        zlink_gone(d->inst, true);
+    }
     if (k != d->k) {
         d->model_ok = 0;
     }
@@ -1161,6 +1357,10 @@ static void apply(vdev_t *d)
 }
 
 // ---------------------------------------------------------------- sending
+// Priorities: the transport layer's control frames (T_ACK, T_NAK, T_Disconnect) and the network management on
+// broadcast (individual address services) go with "system". Every answer of device management, and every extended
+// frame, goes with "low", as the conformance tests expect them (08_03_07 2.6, 2.7: BCh, 3Ch) and as 03_03_02 2.2.3
+// makes "low" mandatory for long frames. Group telegrams go with "low" as well.
 #define PRIO_SYSTEM 0
 #define PRIO_LOW    3
 
@@ -1187,7 +1387,7 @@ static void kick(vdev_t *d)
     uint8_t t[KNX_TPDU_MAX];
     memcpy(t, c->q[c->qh], c->qn[c->qh]);
     t[0] = (uint8_t)(0x40 | c->tx_seq << 2 | (t[0] & 0x03));   // T_Data_Connected
-    tx(d, c->remote, false, PRIO_SYSTEM, t, c->qn[c->qh]);
+    tx(d, c->remote, false, PRIO_LOW, t, c->qn[c->qh]);
     c->sent = c->last = esp_timer_get_time();   // an answer on its way keeps the connection: three repetitions, then the end
 }
 
@@ -1200,6 +1400,7 @@ static void conn_drop(vdev_t *d, const char *why)
     tx_ctl(d, c->remote, 0x81);   // T_Disconnect
     c->on = false;
     ESP_LOGI(TAG, "dev %d: connection closed (%s)", slot(d), why);
+    app_gone(d);
 }
 
 typedef struct {
@@ -1216,7 +1417,7 @@ static void reply(const rctx_t *r, uint8_t *a, int n)
     }
     if (!r->connected) {
         a[0] &= 0x03;   // T_Data_Individual
-        tx(r->d, r->to, false, PRIO_SYSTEM, a, (uint8_t)n);
+        tx(r->d, r->to, false, PRIO_LOW, a, (uint8_t)n);
         return;
     }
     conn_t *c = &r->d->c;
@@ -1299,6 +1500,9 @@ static void load_event(vdev_t *d, int obj, const uint8_t *data, int n)
     lobj_t *o = &d->lo[obj];
     uint8_t before = o->state, ev = n ? data[0] : 0, err = 0;
     char why[112] = "";
+    if (obj == 4 && (ev == LE_START || ev == LE_UNLOAD) && before == LS_LOADED) {
+        d->app_leaving = true;   // the class stops if the application is not loaded again (app_gone())
+    }
     if (ev == LE_START) {   // 03_05_01 Table 94: Error stays Error until Unload
         if (o->state != LS_ERROR) {
             o->state = LS_LOADING;
@@ -1312,7 +1516,10 @@ static void load_event(vdev_t *d, int obj, const uint8_t *data, int n)
                 o->state = LS_LOADED;
                 if (obj == 4) {
                     d->fault = 0;   // what this download brings is checked; apply() at the restart decides anew
+                    d->retry_at = 0;
+                    d->app_leaving = false;
                     seg_share(d);
+                    tpl_checked(d, d->next_tpl ? d->next_digest : NULL, d->next_params);
                 }
             }
         }
@@ -1339,6 +1546,7 @@ static void load_event(vdev_t *d, int obj, const uint8_t *data, int n)
     if (err) {   // the first error is the one PID 28 keeps (03_05_01 4.2.28)
         if (o->state != LS_ERROR) {
             o->err = err;
+            o->keep_until = esp_timer_get_time() + SEG_KEEP_US;   // nothing reads it in Error: its RAM goes back
         }
         o->state = LS_ERROR;
     } else if (o->state != LS_ERROR) {
@@ -1511,8 +1719,14 @@ static int prop_write(vdev_t *d, int obj, int pid, const uint8_t *data, int n, u
     } else if (pid == 6) {
         d->lo[obj].run_state = data[0];
     } else if (pid == 13) {
-        memset(d->lo[obj].pv, 0, 5);
-        memcpy(d->lo[obj].pv, data, n > 5 ? 5 : (size_t)n);
+        uint8_t pv[5] = {0};
+        memcpy(pv, data, n > 5 ? 5 : (size_t)n);
+        if (obj == 4 && !is_gw(d) && memcmp(pv, d->lo[4].pv, 5) != 0) {
+            // another application: what an object held under the old one is no value of the new one (a read was
+            // answered with it until the new class set it, or for good while its Zigbee device was off)
+            memset(d->ko, 0, sizeof d->ko);
+        }
+        memcpy(d->lo[obj].pv, pv, 5);
         mark(d);
     }
     return prop_read(d, obj, pid, out);
@@ -1532,6 +1746,7 @@ static void restart(vdev_t *d)
     d->c.on = false;
     publish();
     apply(d);
+    app_gone(d);
 }
 
 static void apdu(vdev_t *d, uint16_t src, const uint8_t *t, int len, bool connected)
@@ -1560,7 +1775,7 @@ static void apdu(vdev_t *d, uint16_t src, const uint8_t *t, int len, bool connec
         reply(&r, b, (int)(p - b));
     } else if (a == 0x3D5 && len >= 6) {   // A_PropertyValue_Read
         int obj = t[2], pid = t[3], count = t[4] >> 4, start = (t[4] & 0x0F) << 8 | t[5];
-        uint8_t v[12];
+        uint8_t v[PROP_MAX];
         int n = -1, rc = 0;
         if (pid == 23 && (obj == 1 || obj == 2)) {   // PID_TABLE: the table itself as an array
             const uint8_t *tab;
@@ -1570,7 +1785,7 @@ static void apdu(vdev_t *d, uint16_t src, const uint8_t *t, int len, bool connec
                 v[1] = (uint8_t)cnt;
                 n = 2;
                 rc = 1;
-            } else if (count && start + count - 1 <= cnt && count * es <= 10) {
+            } else if (count && start + count - 1 <= cnt && count * es <= s_max_apdu - 5) {   // what the answer takes
                 memcpy(v, tab + 2 + (start - 1) * es, (size_t)(count * es));
                 n = count * es;
                 rc = count;
@@ -1597,7 +1812,7 @@ static void apdu(vdev_t *d, uint16_t src, const uint8_t *t, int len, bool connec
             memcpy(p, v, (size_t)n);
             p += n;
         }
-        char vh[25] = "absent";
+        char vh[2 * PROP_MAX + 1] = "absent";
         if (n >= 0) {
             hex(v, n, vh);
         }
@@ -1679,7 +1894,10 @@ static void apdu(vdev_t *d, uint16_t src, const uint8_t *t, int len, bool connec
     } else if ((a & 0x3C0) == 0x280 && len >= 4) {   // A_Memory_Write
         int count = a & 0x3F;
         uint32_t addr = be16(t + 2);
-        lobj_t *o = count && len >= 4 + count ? seg_at(d, addr, (uint32_t)count, true) : NULL;
+        // Nothing is written when number exceeds PID 56 - 3 or is not the number of data octets that came (03_03_07
+        // p. 113); verify mode answers that with number 0, as any write that fails (08_03_07 2.7.11)
+        bool fits = count && count <= s_max_apdu - 3 && len == 4 + count;
+        lobj_t *o = fits ? seg_at(d, addr, (uint32_t)count, true) : NULL;
         if (o && !seg_own(o)) {   // never while a part is kept apart (an allocation came first), but never into it
             o = NULL;
         }
@@ -1713,8 +1931,29 @@ static void apdu(vdev_t *d, uint16_t src, const uint8_t *t, int len, bool connec
         *p++ = 0;
         ESP_LOGI(TAG, "dev %d: ADC channel %d read, %d samples -> none (count 0)", slot(d), a & 0x3F, t[2]);
         reply(&r, b, (int)(p - b));
-    } else if ((a & 0x3C0) == 0x380) {   // A_Restart
-        restart(d);
+    } else if ((a & 0x3C0) == 0x380) {   // A_Restart (03_03_07 p. 52, 03_05_02 3.7)
+        if (a & 0x3E) {
+            // the response bit (an answer of another device) or a reserved bit set: ignored (03_05_02 3.7.2 (1))
+            d->unhandled++;
+            ESP_LOGW(TAG, "dev %d: A_Restart with APCI 0x%03x ignored", slot(d), a);
+        } else if (!(a & 1)) {
+            restart(d);   // basic restart, not confirmed
+        } else if (len >= 4) {
+            // Master reset. Only the confirmed restart is taken (erase code 01h, channel 00h): error code 0 and process
+            // time 0 go out before the basic restart it stands for (03_05_02 Table 4). Every other erase code would
+            // reset address, application or tables of a device a Zigbee device stands behind: "unsupported erase
+            // code" (02h), nothing reset. Erase code 01h with a channel: "invalid channel number" (03h).
+            uint8_t err = t[2] != 0x01 ? 0x02 : t[3] ? 0x03 : 0x00;
+            p = apci(b, 0x3A1);   // A_Restart_Response, restart type 1
+            *p++ = err;
+            *p++ = 0;
+            *p++ = 0;
+            ESP_LOGI(TAG, "dev %d: master reset, erase code %u channel %u -> error code %u", slot(d), t[2], t[3], err);
+            reply(&r, b, (int)(p - b));
+            if (!err) {
+                restart(d);
+            }
+        }
     } else {
         d->unhandled++;
         char h[33];
@@ -1745,6 +1984,7 @@ static void individual(vdev_t *d, const knx_frame_t *f)
         if (c->on && c->remote == src) {
             c->on = false;
             ESP_LOGI(TAG, "dev %d: disconnected by its partner", slot(d));
+            app_gone(d);
         }
     } else if ((tp & 0xC0) == 0x40) {   // T_Data_Connected
         if (!c->on || c->remote != src) {
@@ -1805,6 +2045,35 @@ static void ia_written(vdev_t *d, uint16_t old)
     }
 }
 
+// Another of our devices, the gateway included, has this individual address already: frames to it would reach only the
+// first of them (dispatch()). 15.15.255 is no address and may be shared. Every device in programming mode takes an
+// address written to it, so two of them would take the same one; ETS writes only when exactly one answered the
+// address read (03_05_02 2.3), other tools may not.
+static vdev_t *ia_owner(uint16_t ia, const vdev_t *except)
+{
+    for (int i = 0; i < NDEV && ia != IA_UNPROG; i++) {
+        if (s_d[i].used && &s_d[i] != except && s_d[i].ia == ia) {
+            return &s_d[i];
+        }
+    }
+    return NULL;
+}
+
+static bool ia_free_for(vdev_t *d, uint16_t ia)   // false: refused, and told on the gateway's message object
+{
+    vdev_t *o = ia_owner(ia, d);
+    if (!o) {
+        return true;
+    }
+    char a[12], why[96];
+    ia_str(ia, a);
+    snprintf(why, sizeof why, "address %s for device %d refused: %s has it already", a, slot(d),
+             is_gw(o) ? "the gateway" : "another virtual device");
+    ESP_LOGW(TAG, "%s (device %d)", why, slot(o));
+    gw_note(GW_NOTE_DUP, ia, 0, why);
+    return false;
+}
+
 static void broadcast(vdev_t *d, const knx_frame_t *f)
 {
     const uint8_t *t = f->tpdu;
@@ -1817,6 +2086,10 @@ static void broadcast(vdev_t *d, const knx_frame_t *f)
     } else if (a == 0x0C0 && d->prog && f->len >= 4) {   // A_IndividualAddress_Write
         char o[12], n[12];
         uint16_t old = d->ia;
+        s_hit = true;
+        if (!ia_free_for(d, be16(t + 2))) {
+            return;
+        }
         ia_str(d->ia, o);
         d->ia = be16(t + 2);
         ia_str(d->ia, n);
@@ -1835,6 +2108,10 @@ static void broadcast(vdev_t *d, const knx_frame_t *f)
     } else if (a == 0x3DE && f->len >= 10 && memcmp(t + 2, d->serial, 6) == 0) {   // ..SerialNumber_Write
         char n[12];
         uint16_t old = d->ia;
+        s_hit = true;
+        if (!ia_free_for(d, be16(t + 8))) {
+            return;
+        }
         d->ia = be16(t + 8);
         ia_str(d->ia, n);
         mark(d);
@@ -1866,6 +2143,24 @@ static int ko_tpdu(vdev_t *d, int asap, uint16_t code, uint8_t *t)   // TPDU oct
     return 2 + n;
 }
 
+// A_GroupValue_Response with the value of object asap on group address ga. false: the link had no room for it.
+static bool ko_answer(vdev_t *d, int asap, uint16_t ga)
+{
+    uint8_t b[2 + KNX_KO_VAL];
+    int n = ko_tpdu(d, asap, 0x040, b);
+    if (!n) {
+        return true;
+    }
+    if (!tx(d, ga, true, PRIO_LOW, b, (uint8_t)n)) {
+        return false;
+    }
+    d->grp_tx++;
+    char gs[12];
+    ga_str(ga, gs);
+    ESP_LOGI(TAG, "dev %d: %s read -> KO %d answered", slot(d), gs, asap);
+    return true;
+}
+
 static void group(vdev_t *d, const knx_frame_t *f)
 {
     const uint8_t *g, *as, *t = f->tpdu;
@@ -1882,7 +2177,9 @@ static void group(vdev_t *d, const knx_frame_t *f)
         }
         d->grp_rx++;
         s_hit = true;
-        if ((a & 0x3C0) == 0x080 && (desc & 1 << 12)) {   // A_GroupValue_Write, write flag
+        // A_GroupValue_Write with the write flag; A_GroupValue_Response with the update flag (03_05_01 Table 87,
+        // bit 15) updates the object as a write does: a class that toggles needs the state another device reports
+        if (((a & 0x3C0) == 0x080 && (desc & 1 << 12)) || ((a & 0x3C0) == 0x040 && (desc & 1 << 15))) {
             uint8_t six = t[1] & 0x3F;
             const uint8_t *v = f->len == 2 ? &six : t + 2;
             int n = f->len == 2 ? 1 : f->len - 2;
@@ -1901,15 +2198,66 @@ static void group(vdev_t *d, const knx_frame_t *f)
                 zlink_knx_write(d->inst, asap, h);
             }
         } else if (a == 0x000 && (desc & 1 << 11) && d->ko[asap].have) {   // A_GroupValue_Read, read flag
-            uint8_t b[2 + KNX_KO_VAL];
-            int n = ko_tpdu(d, asap, 0x040, b);
-            if (n) {
-                tx(d, f->dst, true, PRIO_LOW, b, (uint8_t)n);
-                d->grp_tx++;
-                char gs[12];
-                ga_str(f->dst, gs);
-                ESP_LOGI(TAG, "dev %d: %s read -> KO %d answered", slot(d), gs, asap);
+            if (!ko_answer(d, asap, f->dst)) {   // the link had no room: timers() answers (it was dropped, and counted)
+                d->resp_ko = (uint8_t)asap;
+                d->resp_ga = f->dst;
             }
+        }
+    }
+}
+
+static bool ko_on(vdev_t *d, int asap, uint16_t ga)   // object asap is associated with group address ga
+{
+    const uint8_t *g, *a;
+    int ng = ga_count(d, &g), na = assoc_count(d, &a);
+    for (int i = 0; i < na; i++) {
+        int ts = be16(a + 2 + 4 * i), as = be16(a + 4 + 4 * i);
+        if (as == asap && ts >= 1 && ts <= ng && be16(g + 2 * ts) == ga) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The link gave up a group telegram of ours: no L_Data.con, an error flag of the chip, a reset in between. Nobody
+// repeats it otherwise (the transport layer does that for management, a client asks again). A status value that is
+// still the object's goes out again, at most LOST_MAX times, and so does an answer to a read. Values the class sent as
+// commands are not repeated: one may have reached the bus after all, and twice is not once.
+static void relost(const knx_frame_t *f)
+{
+    if (!f->group || !f->dst || f->len < 2) {
+        return;
+    }
+    uint16_t a = (uint16_t)((f->tpdu[0] & 0x03) << 8 | f->tpdu[1]);
+    bool wr = (a & 0x3C0) == 0x080, rsp = (a & 0x3C0) == 0x040;
+    for (int i = 0; i < NDEV && (wr || rsp); i++) {
+        vdev_t *d = &s_d[i];
+        if (!d->used || d->ia != f->src) {
+            continue;
+        }
+        for (int ko = 1; ko <= KO_MAX; ko++) {
+            uint8_t b[2 + KNX_KO_VAL];
+            if (!d->ko[ko].have || !ko_on(d, ko, f->dst) || (wr && !d->ko[ko].status)) {
+                continue;
+            }
+            int n = ko_tpdu(d, ko, wr ? 0x080 : 0x040, b);
+            if (n != f->len || memcmp(b, f->tpdu, (size_t)n) != 0) {
+                continue;   // not this object, or another value went out since: that one counts
+            }
+            char gs[12];
+            ga_str(f->dst, gs);
+            if (d->ko[ko].lost >= LOST_MAX) {
+                ESP_LOGW(TAG, "dev %d: KO %d -> %s given up by the link once more: not sent again", slot(d), ko, gs);
+                continue;
+            }
+            d->ko[ko].lost++;
+            if (wr) {
+                d->ko[ko].unsent = 1;
+            } else {
+                d->resp_ko = (uint8_t)ko;
+                d->resp_ga = f->dst;
+            }
+            ESP_LOGW(TAG, "dev %d: KO %d -> %s given up by the link: sent again", slot(d), ko, gs);
         }
     }
 }
@@ -1953,6 +2301,10 @@ static void ko_out(int inst, int ko, const uint8_t *v, int n, bool initial, bool
         return;
     }
     bool changed = !d->ko[ko].have || d->ko[ko].len != n || memcmp(d->ko[ko].v, v, (size_t)n) != 0;
+    if (changed) {
+        d->ko[ko].lost = 0;
+    }
+    d->ko[ko].status = status;
     d->ko[ko].have = true;
     d->ko[ko].len = (uint8_t)n;
     memcpy(d->ko[ko].v, v, (size_t)n);
@@ -2039,17 +2391,28 @@ static void timers(int64_t now)
                 conn_drop(d, "idle");
             }
         }
+        if (d->resp_ko && (!d->ko[d->resp_ko].have || ko_answer(d, d->resp_ko, d->resp_ga))) {   // an answer first
+            d->resp_ko = 0;
+        }
         for (int ko = 1; ko <= KO_MAX; ko++) {   // values the link had no room for
             if (d->ko[ko].unsent && (d->ko[ko].unsent = !ko_put(d, ko))) {
                 break;
             }
         }
-        for (int o = 1; o <= 5 && !d->c.on; o++) {   // content kept for an allocation that never came; never
-            lobj_t *l = &d->lo[o];                   // while a connection is open, a download may still be running
-            if ((l->seg || l->ts1) && !l->size && l->keep_until && now > l->keep_until) {
+        // Content kept for an allocation that never came, or of an object in Error (nothing reads it until the Unload
+        // that has to come first; it held up to 16 KiB of the budget till then). Never while a connection is open: a
+        // download may still be running.
+        for (int o = 1; o <= 5 && !d->c.on; o++) {
+            lobj_t *l = &d->lo[o];
+            if ((l->seg || l->ts1) && (!l->size || l->state == LS_ERROR) && l->keep_until && now > l->keep_until) {
                 seg_drop(l);
+                l->size = 0;
                 l->keep_until = 0;
             }
+        }
+        if (d->retry_at && now > d->retry_at && !d->c.on) {   // its template found no memory: once more
+            d->retry_at = 0;
+            apply(d);
         }
         if (d->reparam && d->k >= 2 && now > d->reread_at) {   // the device has not told its model yet: ask again
             // 30 s, then twice as long each time up to 32 min: a sleepy device answers only when it is awake
@@ -2058,6 +2421,9 @@ static void timers(int64_t now)
             if (!zlink_is_off(d->inst)) {   // not while it does not answer: its availability check asks anyway
                 zlink_reread(d->inst);
             }
+        }
+        if (d->k >= 0 && zlink_params_due(d->inst)) {   // it answers again: what the class writes may have missed it
+            send_params(d);
         }
     }
     // A flash write holds up the receive path, so it waits for a quiet moment of our own traffic. The wait has an
@@ -2075,56 +2441,109 @@ static void timers(int64_t now)
     }
 }
 
+static void queued(QueueHandle_t q, volatile uint8_t *peak)   // after a send into q: high-water mark, wake the task
+{
+    UBaseType_t n = uxQueueMessagesWaiting(q);
+    if (n > *peak) {
+        *peak = (uint8_t)n;
+    }
+    if (s_task) {
+        xTaskNotifyGive(s_task);
+    }
+}
+
 static void sink(const knx_frame_t *f)   // in the link task: never block
 {
     ev_t e = {.type = EV_FRAME};
     e.f = *f;
     if (xQueueSend(s_q, &e, 0) != pdTRUE) {
         s_ev_lost++;
+        return;
     }
+    queued(s_q, &s_q_peak);
+}
+
+static void lost(const knx_frame_t *f)   // in the link task: a frame of ours it gave up, never block
+{
+    ev_t e = {.type = EV_LOST};
+    e.f = *f;
+    if (xQueueSend(s_q, &e, 0) != pdTRUE) {
+        s_ev_lost++;
+        return;
+    }
+    queued(s_q, &s_q_peak);
 }
 
 // from zlink.c, in the Berry task while a hook runs: never block, the device server may be waiting for that hook
 void vdev_ko_out(int inst, int ko, const uint8_t *v, int n, bool initial, bool status)
 {
-    if (!s_q || n < 1 || n > KNX_KO_VAL) {
+    if (!s_kq || n < 1 || n > KNX_KO_VAL) {
         return;
     }
-    ev_t e = {.type = EV_KO};
-    e.ko.inst = (int16_t)inst;
-    e.ko.ko = (uint8_t)ko;
-    e.ko.len = (uint8_t)n;
-    memcpy(e.ko.v, v, (size_t)n);
-    e.ko.initial = initial;
-    e.ko.status = status;
-    if (xQueueSend(s_q, &e, 0) != pdTRUE) {
-        s_ev_lost++;
+    kv_t k = {.inst = (int16_t)inst, .ko = (uint8_t)ko, .len = (uint8_t)n, .initial = initial, .status = status};
+    memcpy(k.v, v, (size_t)n);
+    if (xQueueSend(s_kq, &k, 0) != pdTRUE) {
+        s_kv_lost++;
+        return;
     }
+    queued(s_kq, &s_kq_peak);
 }
 
-static void vdev_task(void *arg)
+// What waits in both queues, a frame and a value at a time, each under the lock: neither kind waits for all of the
+// other, and the lock is free in between for the console and the gateway's task.
+static void drain(void)
 {
-    (void)arg;
-    ev_t e;
-    int64_t tick = 0;
     for (;;) {
-        bool got = xQueueReceive(s_q, &e, pdMS_TO_TICKS(100)) == pdTRUE;
+        ev_t e;
+        kv_t k;
+        bool f = xQueueReceive(s_q, &e, 0) == pdTRUE, v = xQueueReceive(s_kq, &k, 0) == pdTRUE;
+        if (!f && !v) {
+            return;
+        }
         int64_t now = esp_timer_get_time();
         xSemaphoreTake(s_mx, portMAX_DELAY);
-        if (got && e.type == EV_FRAME) {
+        if (f && e.type == EV_LOST) {
+            relost(&e.f);
+        } else if (f) {
             s_hit = false;
             dispatch(&e.f);
             if (s_hit) {   // only traffic of our own devices keeps the flash waiting, not everything on the line
                 s_last_rx = now;
             }
-        } else if (got) {
-            ko_out(e.ko.inst, e.ko.ko, e.ko.v, e.ko.len, e.ko.initial, e.ko.status);
         }
-        if (now - tick > 100000) {
-            tick = now;
-            timers(now);
+        if (v) {
+            ko_out(k.inst, k.ko, k.v, k.len, k.initial, k.status);
         }
         xSemaphoreGive(s_mx);
+    }
+}
+
+// From the gateway's task (gw.c), which holds no other lock: straight into the gateway's object, nothing is lost on the
+// way. Through the queue a value could be dropped while the task's comparison value already said it was put.
+void vdev_gw_put(int ko, const uint8_t *v, int n, int how)
+{
+    if (!s_mx) {
+        return;
+    }
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    ko_out(VDEV_GW_INST, ko, v, n, how == VDEV_KEEP, how != VDEV_SEND);
+    xSemaphoreGive(s_mx);
+}
+
+static void vdev_task(void *arg)
+{
+    (void)arg;
+    int64_t tick = 0;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+        drain();
+        int64_t now = esp_timer_get_time();
+        if (now - tick >= 100000) {
+            tick = now;
+            xSemaphoreTake(s_mx, portMAX_DELAY);
+            timers(now);
+            xSemaphoreGive(s_mx);
+        }
     }
 }
 
@@ -2172,10 +2591,11 @@ static bool gw_key_move(void)
     return true;
 }
 
-// At the start, after every record was read: a template part no record names any more goes (its last device was
-// deleted or loaded something else since the last start, or a restart came between blob and record).
+// At the start, after every record was read: a template part no record names any more goes (a restart came between
+// blob and record, or firmware before this one left it). From then on a part goes as soon as its last record does.
 static void ts_sweep(void)
 {
+    s_swept = true;
     static char gone[16][16];   // more go at the next start
     int n = 0;
     nvs_iterator_t it = NULL;
@@ -2206,10 +2626,21 @@ static void ts_sweep(void)
 
 void vdev_start(void)
 {
+    s_swept = false;   // until every record is read: one of them may name a part that looks unnamed
     s_mx = xSemaphoreCreateMutex();
-    s_q = xQueueCreate(24, sizeof(ev_t));
+    s_q = xQueueCreate(FRAME_Q, sizeof(ev_t));
+    s_kq = xQueueCreate(VALUE_Q, sizeof(kv_t));
+    // The task runs before the devices come back: each one's class sends its first values while the next device is
+    // brought up, and they are taken whenever the lock is free. Before, all of them waited for the whole start, and
+    // with 32 lamps of 2 to 4 values each the queue was full long before the task ran.
+    xTaskCreate(vdev_task, "vdev", 5120, NULL, 6, &s_task);
+    xSemaphoreTake(s_mx, portMAX_DELAY);
     esp_err_t e = nvs_flash_init_partition(NVS_PART);
     if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        // NVS cannot use the partition as it is: it is erased, and with it every device ETS loaded
+        ESP_LOGE(TAG, "partition %s: %s; ERASED, the records of every virtual device and the gateway are lost",
+                 NVS_PART, esp_err_to_name(e));
+        gw_note(GW_NOTE_STORE, 0xFFFF, 0, "the records' partition had to be erased at the start: every device is lost");
         nvs_flash_erase_partition(NVS_PART);
         e = nvs_flash_init_partition(NVS_PART);
     }
@@ -2217,9 +2648,11 @@ void vdev_start(void)
         e = nvs_open_from_partition(NVS_PART, "vdev", NVS_READWRITE, &s_nvs);
     }
     s_nvs_ok = e == ESP_OK;
-    if (!s_nvs_ok) {
+    if (!s_nvs_ok) {   // the gateway's fault stays on (vdev_store_failing())
         ESP_LOGE(TAG, "partition %s: %s; devices are not kept over a restart", NVS_PART, esp_err_to_name(e));
+        gw_note(GW_NOTE_STORE, 0xFFFF, 0, "the records' partition cannot be used: devices are not kept over a restart");
     }
+    // Every record first: which template parts they name decides what ts_sweep() deletes
     int n = 0;
     s_v8_blocked = s_nvs_ok && !gw_key_move();   // until the move is done, slot 8 is neither read nor handed out
     for (int i = 0; i < VDEV_MAX && s_nvs_ok; i++) {
@@ -2230,39 +2663,62 @@ void vdev_start(void)
             ESP_LOGI(TAG, "dev %d: restored, %s, load states %u %u %u %u %u, parameter segment %u B", i, a,
                      d->lo[1].state, d->lo[2].state, d->lo[3].state, d->lo[4].state, d->lo[5].state,
                      (unsigned)d->lo[4].size);
-            if (d->zaddr != ZADDR_NONE) {
-                apply(d);   // the template or the class of the last download
-                // Nothing came up: a refused template falls back to the class built in for the application, with
-                // its defaults; a device set up by hand and not downloaded yet gets the class it was given.
-                int k = app_class(d) >= 0 ? app_class(d) : d->lo[4].state == LS_UNLOADED ? d->k_hint : -1;
-                if (d->k < 0 && k >= 0 && zlink_set(d->inst, k, d->zaddr, d->zep) == 0) {
-                    d->k = (int8_t)k;
-                    if (d->fault) {
-                        ESP_LOGW(TAG, "dev %d: runs the built-in class %s with its defaults instead; its load state "
-                                 "reads Error (%u) until the next download", i, bvm_slot_name(k), d->fault);
-                    }
-                }
-            }
             n++;
         }
     }
     vdev_t *g = &s_d[GW];   // the gateway's own device is always there; its parameters go to gw.c
-    if (s_nvs_ok && restore(GW)) {
-        char a[12];
-        ia_str(g->ia, a);
-        ESP_LOGI(TAG, "gateway: restored, %s, load states %u %u %u %u %u, parameter segment %u B", a, g->lo[1].state,
-                 g->lo[2].state, g->lo[3].state, g->lo[4].state, g->lo[5].state, (unsigned)g->lo[4].size);
-        apply(g);
-    } else {
+    bool gw_back = s_nvs_ok && restore(GW);
+    if (!gw_back) {
         init_dev(g);
         ESP_LOGI(TAG, "gateway: not loaded yet, 15.15.255");
     }
     if (s_nvs_ok) {
         ts_sweep();
     }
+    xSemaphoreGive(s_mx);
+    // Then one device after the other, the lock free in between for the task
+    for (int i = 0; i < VDEV_MAX; i++) {
+        xSemaphoreTake(s_mx, portMAX_DELAY);
+        vdev_t *d = &s_d[i];
+        if (d->used && d->zaddr != ZADDR_NONE) {
+            apply(d);   // the template or the class of the last download
+            // A device set up by hand that ETS has not loaded yet runs the built-in class it was given. An application
+            // that is loaded and does not come up runs nothing, as at run time: its load state reads Error (earlier
+            // firmware fell back to the built-in class of the application number, with that class's defaults and
+            // the tables of whatever version was loaded).
+            int k = d->lo[4].state == LS_UNLOADED ? d->k_hint : -1;
+            if (d->k < 0 && k >= 0 && zlink_set(d->inst, k, d->zaddr, d->zep) == 0) {
+                d->k = (int8_t)k;
+                if (d->gone) {   // as in apply(): a device that left stays off until it is back
+                    zlink_gone(d->inst, true);
+                }
+            }
+        }
+        xSemaphoreGive(s_mx);
+    }
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    for (int i = 0; i < NDEV; i++) {   // records written before the check above may share an address: told, kept
+        vdev_t *o = s_d[i].used ? ia_owner(s_d[i].ia, &s_d[i]) : NULL;
+        if (o && o > &s_d[i]) {
+            char a[12], why[96];
+            ia_str(s_d[i].ia, a);
+            snprintf(why, sizeof why, "devices %d and %d both have address %s: frames reach only the first", i, slot(o),
+                     a);
+            ESP_LOGE(TAG, "%s", why);
+            gw_note(GW_NOTE_DUP, s_d[i].ia, 0, why);
+        }
+    }
+    if (gw_back) {
+        char a[12];
+        ia_str(g->ia, a);
+        ESP_LOGI(TAG, "gateway: restored, %s, load states %u %u %u %u %u, parameter segment %u B", a, g->lo[1].state,
+                 g->lo[2].state, g->lo[3].state, g->lo[4].state, g->lo[5].state, (unsigned)g->lo[4].size);
+        apply(g);
+    }
     publish();
+    xSemaphoreGive(s_mx);
     knx_link_sink(sink);
-    xTaskCreate(vdev_task, "vdev", 5120, NULL, 6, NULL);
+    knx_link_lost(lost);
     ESP_LOGI(TAG, "device server up, %d virtual devices and the gateway", n);
 }
 
@@ -2286,6 +2742,7 @@ int vdev_add(uint16_t zaddr, uint8_t ep, int k, const uint8_t *ieee)
         if (ieee) {
             memcpy(d->ieee, ieee, 8);
             d->have_ieee = true;
+            serial_of(d);
         }
         mark(d);
         publish();
@@ -2321,6 +2778,7 @@ bool vdev_del(int i)
             rec_key(i, key);
             nvs_erase_key(s_nvs, key);
             nvs_commit(s_nvs);
+            tref_set(i, 0, 0);   // its template part goes with it unless another record names it
         }
         publish();
         zlink_del(100 + i);          // the VM forgets the instance, the Zigbee device is free for another one
@@ -2358,7 +2816,7 @@ int vdev_by_ieee(const uint8_t ieee[8])   // the virtual device that serves this
 // from then on; one that came back with another short address is followed there. true: it is one of ours.
 bool vdev_seen(uint16_t zaddr, const uint8_t ieee[8])
 {
-    int moved = -1, k = -1, inst = 0, back = 0;
+    int moved = -1, k = -1, inst = 0, back = 0;   // moved: a class given by hand follows its device (no download)
     uint8_t ep = 1;
     bool ours = false;
     xSemaphoreTake(s_mx, portMAX_DELAY);
@@ -2378,16 +2836,23 @@ bool vdev_seen(uint16_t zaddr, const uint8_t ieee[8])
                 ESP_LOGW(TAG, "dev %d: its Zigbee device came back as 0x%04x (was 0x%04x)", i, zaddr, d->zaddr);
                 d->zaddr = zaddr;
                 mark(d);
-                moved = i;
-                k = d->k;
-                inst = d->inst;
-                ep = d->zep;
+                if (d->lo[4].state == LS_LOADED && d->lo[4].size) {
+                    // As after a start: apply() links the class at the new address and hands it the parameters of the
+                    // download again. zlink_set() alone gave a built-in class its default segment.
+                    apply(d);
+                } else {   // a class given by hand, nothing downloaded: its defaults are all it has
+                    moved = i;
+                    k = d->k;
+                    inst = d->inst;
+                    ep = d->zep;
+                }
             } else if (d->k >= 0) {   // same address: power back or a rejoin, what it shows now may have changed
                 back = d->inst;
             }
         } else if (!d->have_ieee && d->zaddr == zaddr) {   // set up before the address was kept: learn it
             memcpy(d->ieee, ieee, 8);
             d->have_ieee = true;
+            serial_of(d);
             mark(d);
             ours = true;
         }
@@ -2435,6 +2900,17 @@ bool vdev_unprogrammed(int i)   // in use and without an individual address, wit
     bool u = s_d[i].used && s_d[i].ia == IA_UNPROG;
     xSemaphoreGive(s_mx);
     return u;
+}
+
+int vdev_rx_on(int i)   // its Zigbee device keeps its receiver on: 1, it sleeps: 0, not known (or no such device): -1
+{
+    if (i < 0 || i >= VDEV_MAX) {
+        return -1;
+    }
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    int r = s_d[i].used && s_d[i].cap_known ? s_d[i].rx_on : -1;
+    xSemaphoreGive(s_mx);
+    return r;
 }
 
 bool vdev_ieee(int i, uint8_t ieee[8])   // false: no such device, or its IEEE address is not known
@@ -2504,6 +2980,7 @@ bool vdev_replace(int i, uint16_t zaddr, const uint8_t ieee[8])
         d->zaddr = zaddr;
         memcpy(d->ieee, ieee, 8);
         d->have_ieee = true;
+        serial_of(d);   // the new Zigbee device's own number: ETS sees another serial number at this address
         d->gone = false;
         d->model_ok = 0;
         mark(d);
@@ -2604,7 +3081,7 @@ void vdev_avail_note(int inst, bool on)   // from the link task, which holds no 
     }
 }
 
-int vdev_max_apdu(int n)   // console apdu: PID 56 of every device, 15 .. KNX_TPDU_MAX - 1; 0 only reads it
+int vdev_max_apdu(int n)   // PID 56 of every device, 15 .. KNX_TPDU_MAX - 1; 0 only reads it. No lock: one octet
 {
     if (n >= MAX_APDU_DEF && n <= KNX_TPDU_MAX - 1) {
         s_max_apdu = (uint8_t)n;
@@ -2633,11 +3110,22 @@ bool vdev_vprog(void)   // a virtual device (not the gateway's own) is in progra
     return s_vprog;
 }
 
-int vdev_faulty(void)   // the gateway's diagnostics: applications in Error or not running as loaded
+bool vdev_store_failing(void)   // the gateway's fault: no storage, or a record waits after a failed write
+{
+    bool f = !s_nvs_ok;
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    for (int i = 0; i < NDEV && !f; i++) {
+        f = s_d[i].used && s_d[i].dirty && s_d[i].save_fails;
+    }
+    xSemaphoreGive(s_mx);
+    return f;
+}
+
+int vdev_faulty(void)   // the gateway's diagnostics: applications in Error or not running as loaded, its own included
 {
     int n = 0;
     xSemaphoreTake(s_mx, portMAX_DELAY);
-    for (int i = 0; i < VDEV_MAX; i++) {
+    for (int i = 0; i < NDEV; i++) {
         const lobj_t *o = &s_d[i].lo[4];
         n += s_d[i].used && (o->state == LS_ERROR || (s_d[i].fault && o->state == LS_LOADED));
     }
@@ -2645,13 +3133,17 @@ int vdev_faulty(void)   // the gateway's diagnostics: applications in Error or n
     return n;
 }
 
-int vdev_store_pct(void)   // NVS entries of devsrv in use, percent; -1: no storage
+// NVS entries of the records' partition in use, percent of those that can be used; -1: no storage. total_entries
+// counts the page NVS keeps free for itself (fillStats), so used against total never reached 100 % (87.5 % with the
+// 8 pages of the TULX32's actor_db).
+int vdev_store_pct(void)
 {
     nvs_stats_t st;
-    if (!s_nvs_ok || nvs_get_stats(NVS_PART, &st) != ESP_OK || !st.total_entries) {
+    size_t usable;
+    if (!s_nvs_ok || nvs_get_stats(NVS_PART, &st) != ESP_OK || !(usable = st.used_entries + st.available_entries)) {
         return -1;
     }
-    return (int)((st.used_entries * 100 + st.total_entries / 2) / st.total_entries);
+    return (int)((st.used_entries * 100 + usable / 2) / usable);
 }
 
 void vdev_counts(int *bound, int *waiting)
@@ -2734,13 +3226,13 @@ bool vdev_prog(int i, bool on)   // also the gateway (VDEV_GW)
     return ok;
 }
 
-bool vdev_set_ia(int i, uint16_t ia)   // also the gateway (VDEV_GW)
+bool vdev_set_ia(int i, uint16_t ia)   // also the gateway (VDEV_GW); false: no such device, or the address is taken
 {
     if (i < 0 || i >= NDEV) {
         return false;
     }
     xSemaphoreTake(s_mx, portMAX_DELAY);
-    bool ok = s_d[i].used;
+    bool ok = s_d[i].used && ia_free_for(&s_d[i], ia);
     if (ok) {
         s_d[i].ia = ia;
         mark(&s_d[i]);
@@ -2753,67 +3245,101 @@ bool vdev_set_ia(int i, uint16_t ia)   // also the gateway (VDEV_GW)
     return ok;
 }
 
+// What the console prints is put together under the device server's lock and printed after it: on the TULX32 the
+// console is UART0 at 115200 Bd, where 32 devices took over a second to print, and no frame was handled meanwhile.
+#define PRINT_BUF   1536
+#define PRINT_ASSOC 16   // association lines per hold of the lock
+typedef struct {
+    char *b;
+    size_t n, len;
+} pbuf_t;
+
+static void pf(pbuf_t *p, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+static void pf(pbuf_t *p, const char *fmt, ...)
+{
+    if (p->len + 1 >= p->n) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    int w = vsnprintf(p->b + p->len, p->n - p->len, fmt, ap);
+    va_end(ap);
+    if (w > 0) {
+        p->len += (size_t)w < p->n - p->len ? (size_t)w : p->n - p->len - 1;
+    }
+}
+
 void vdev_dump(int i, int obj)
 {
     if (i < 0 || i >= NDEV || obj < 1 || obj > 5) {
         return;
     }
+    char head[160];
+    pbuf_t p = {.b = head, .n = sizeof head};
+    head[0] = 0;
+    uint32_t size = 0;
     xSemaphoreTake(s_mx, portMAX_DELAY);
     vdev_t *d = &s_d[i];
     lobj_t *o = &d->lo[obj];
     if (d->used) {
-        printf("dev %d obj %d: state %u, ref 0x%04x, size %u, crc %04x", i, obj, o->state, (unsigned)o->ref,
-               (unsigned)o->size, seg_crc(o));
+        size = o->size;
+        pf(&p, "dev %d obj %d: state %u, ref 0x%04x, size %u, crc %04x", i, obj, o->state, (unsigned)o->ref,
+           (unsigned)o->size, seg_crc(o));
         if (o->ts1) {
-            printf(", octets from %u on kept once (%u devices)", (unsigned)o->at, (unsigned)s_ts[o->ts1 - 1].refs);
+            pf(&p, ", octets from %u on kept once (%u devices)", (unsigned)o->at, (unsigned)s_ts[o->ts1 - 1].refs);
         }
-        printf("\n");
-        for (uint32_t a = 0; a < o->size; a += 32) {
-            uint8_t row[32];
-            uint32_t m = o->size - a < 32 ? o->size - a : 32;
-            seg_read(o, a, row, m);
-            printf("%04x ", (unsigned)a);
-            for (uint32_t j = 0; j < m; j++) {
-                printf("%02x", row[j]);
-            }
-            printf("\n");
-        }
+        pf(&p, "\n");
     }
     xSemaphoreGive(s_mx);
+    printf("%s", head);
+    for (uint32_t a = 0; a < size; a += 32) {   // a row at a time: the segment may change in between (a download)
+        uint8_t row[32];
+        uint32_t m = 0;
+        xSemaphoreTake(s_mx, portMAX_DELAY);
+        if (d->used && a < o->size) {
+            m = o->size - a < 32 ? o->size - a : 32;
+            seg_read(o, a, row, m);
+        }
+        xSemaphoreGive(s_mx);
+        if (!m) {
+            break;
+        }
+        char line[8 + 2 * 32 + 2];
+        int k = snprintf(line, sizeof line, "%04x ", (unsigned)a);
+        for (uint32_t j = 0; j < m; j++) {
+            k += snprintf(line + k, sizeof line - (size_t)k, "%02x", row[j]);
+        }
+        printf("%s\n", line);
+    }
 }
 
-void vdev_print(void)
+// one device's lines from association `from` on (0: with its head); the next association to print, -1: done
+static int print_dev(pbuf_t *p, vdev_t *d, int from, int *count)
 {
     static const char *const LS[] = {"unloaded", "loaded", "loading", "error"};
-    xSemaphoreTake(s_mx, portMAX_DELAY);
-    int n = 0;
-    for (int i = 0; i < NDEV; i++) {
-        vdev_t *d = &s_d[i];
-        if (!d->used) {
-            continue;
-        }
+    static const char *const TP[] = {"", ", embedded template", ", EMBEDDED TEMPLATE REFUSED"};
+    const uint8_t *g, *as;
+    int ng = ga_count(d, &g), na = assoc_count(d, &as), i = slot(d);
+    if (!from) {
         char a[12], sn[13], pv[11];
         ia_str(d->ia, a);
         hex(d->serial, 6, sn);
         hex(d->lo[4].pv, 5, pv);
-        const uint8_t *g, *as;
-        int ng = ga_count(d, &g), na = assoc_count(d, &as);
-        static const char *const TP[] = {"", ", embedded template", ", EMBEDDED TEMPLATE REFUSED"};
         if (is_gw(d)) {
-            printf("gateway (vdev %d): %s%s, serial %s, application of the firmware%s%s\n", i, a,
-                   d->prog ? " PROGRAMMING MODE" : "", sn, d->c.on ? ", connected" : "",
-                   d->dirty ? ", not saved yet" : "");
+            pf(p, "gateway (vdev %d): %s%s, serial %s, application of the firmware%s%s%s\n", i, a,
+               d->prog ? " PROGRAMMING MODE" : "", sn, d->c.on ? ", connected" : "", d->dirty ? ", not saved yet" : "",
+               d->save_fails ? ", ITS RECORD DOES NOT GET INTO THE FLASH" : "");
         } else {
-            n++;
-            printf("vdev %d: %s%s, serial %s, instance %d in slot %d (%s%s%s) <-> Zigbee 0x%04x ep %u%s%s%s%s\n", i,
-                   a, d->prog ? " PROGRAMMING MODE" : "", sn, d->inst, d->k, bvm_slot_name(d->k), TP[d->tpl],
-                   d->model_ok == 2 ? ", MODEL NOT IN THE TEMPLATE'S LIST" : d->model_ok == 1 ? ", model listed" : "",
-                   d->zaddr, d->zep,
-                   d->zaddr == ZADDR_NONE ? "" : !d->cap_known ? " (receiver: not announced yet)"
-                                                : d->rx_on      ? " (receiver on)"
-                                                                : " (sleepy end device)",
-                   d->gone ? " (LEFT THE NETWORK, waits for a replacement)" : "", d->c.on ? ", connected" : "",
-                   d->dirty ? ", not saved yet" : "");
+            (*count)++;
+            pf(p, "vdev %d: %s%s, serial %s, instance %d in slot %d (%s%s%s) <-> Zigbee 0x%04x ep %u%s%s%s%s%s\n", i, a,
+               d->prog ? " PROGRAMMING MODE" : "", sn, d->inst, d->k, bvm_slot_name(d->k), TP[d->tpl],
+               d->model_ok == 2 ? ", MODEL NOT IN THE TEMPLATE'S LIST" : d->model_ok == 1 ? ", model listed" : "",
+               d->zaddr, d->zep,
+               d->zaddr == ZADDR_NONE ? "" : !d->cap_known ? " (receiver: not announced yet)"
+                                        : d->rx_on      ? " (receiver on)"
+                                                        : " (sleepy end device)",
+               d->gone ? " (LEFT THE NETWORK, waits for a replacement)" : "", d->c.on ? ", connected" : "",
+               d->dirty ? ", not saved yet" : "", d->save_fails ? ", ITS RECORD DOES NOT GET INTO THE FLASH" : "");
         }
         char app[40];
         if (d->lo[4].state == LS_ERROR) {
@@ -2823,37 +3349,68 @@ void vdev_print(void)
         } else {
             snprintf(app, sizeof app, "%s", LS[d->lo[4].state]);
         }
-        printf("        tables %s/%s/%s, application %s (%s, %u B), PEI %s; %d group addresses, %d associations\n",
-               LS[d->lo[1].state], LS[d->lo[2].state], LS[d->lo[3].state], app, pv, (unsigned)d->lo[4].size,
-               LS[d->lo[5].state], ng, na);
-        for (int j = 0; j < na; j++) {
-            int ts = be16(as + 2 + 4 * j), asap = be16(as + 4 + 4 * j);
-            char gs[12] = "?";
-            if (ts >= 1 && ts <= ng) {
-                ga_str(be16(g + 2 * ts), gs);
-            }
-            printf("        %s <-> KO %d (descriptor %04x)\n", gs, asap, descriptor(d, asap));
-        }
-        printf("        frames in %lu, out %lu; group in %lu, out %lu; unhandled services %lu\n",
-               (unsigned long)d->rx, (unsigned long)d->tx, (unsigned long)d->grp_rx, (unsigned long)d->grp_tx,
-               (unsigned long)d->unhandled);
+        pf(p, "        tables %s/%s/%s, application %s (%s, %u B), PEI %s; %d group addresses, %d associations\n",
+           LS[d->lo[1].state], LS[d->lo[2].state], LS[d->lo[3].state], app, pv, (unsigned)d->lo[4].size,
+           LS[d->lo[5].state], ng, na);
     }
-    printf("vdev: %d virtual devices, %lu events lost, %lu saves (%lu failed), segments %u of %u B%s; PID 56 (max APDU) "
-           "%u%s\n", n, (unsigned long)s_ev_lost, (unsigned long)s_saves, (unsigned long)s_save_errs,
-           (unsigned)seg_total(), (unsigned)SEG_BUDGET, s_nvs_ok ? "" : ", NO STORAGE", s_max_apdu,
-           s_max_apdu > MAX_APDU_DEF ? " (long frames)" : "");
+    int j = from;
+    for (; j < na && j < from + PRINT_ASSOC; j++) {
+        int ts = be16(as + 2 + 4 * j), asap = be16(as + 4 + 4 * j);
+        char gs[12] = "?";
+        if (ts >= 1 && ts <= ng) {
+            ga_str(be16(g + 2 * ts), gs);
+        }
+        pf(p, "        %s <-> KO %d (descriptor %04x)\n", gs, asap, descriptor(d, asap));
+    }
+    if (j < na) {
+        return j;
+    }
+    pf(p, "        frames in %lu, out %lu; group in %lu, out %lu; unhandled services %lu\n", (unsigned long)d->rx,
+       (unsigned long)d->tx, (unsigned long)d->grp_rx, (unsigned long)d->grp_tx, (unsigned long)d->unhandled);
+    return -1;
+}
+
+void vdev_print(void)
+{
+    pbuf_t p = {.b = malloc(PRINT_BUF), .n = PRINT_BUF};
+    if (!p.b) {
+        printf("vdev: no memory to print\n");
+        return;
+    }
+    int n = 0;
+    for (int i = 0; i < NDEV; i++) {
+        for (int from = 0; from >= 0;) {
+            p.len = 0;
+            p.b[0] = 0;
+            xSemaphoreTake(s_mx, portMAX_DELAY);
+            from = s_d[i].used ? print_dev(&p, &s_d[i], from, &n) : -1;
+            xSemaphoreGive(s_mx);
+            printf("%s", p.b);
+        }
+    }
+    p.len = 0;
+    p.b[0] = 0;
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    pf(&p, "vdev: %d virtual devices; waiting at most %u of %d frames (%lu lost) and %u of %d class values (%lu lost); "
+       "%lu saves (%lu failed), segments %u of %u B%s; PID 56 (max APDU) %u%s\n", n, s_q_peak, FRAME_Q,
+       (unsigned long)s_ev_lost, s_kq_peak, VALUE_Q, (unsigned long)s_kv_lost, (unsigned long)s_saves,
+       (unsigned long)s_save_errs, (unsigned)seg_total(), (unsigned)SEG_BUDGET, s_nvs_ok ? "" : ", NO STORAGE",
+       s_max_apdu, s_max_apdu > MAX_APDU_DEF ? " (long frames)" : "");
     for (int i = 0; i < NDEV; i++) {
         if (s_ts[i].refs) {
             char k[16];
             ts_key(s_ts[i].crc, s_ts[i].len, k);
-            printf("template part %s: %u B, kept once for %u device(s)%s\n", k, (unsigned)s_ts[i].len,
-                   (unsigned)s_ts[i].refs, s_ts[i].saved ? "" : ", not saved yet");
+            pf(&p, "template part %s: %u B, kept once for %u device(s)%s\n", k, (unsigned)s_ts[i].len,
+               (unsigned)s_ts[i].refs, s_ts[i].saved ? "" : ", not saved yet");
         }
     }
     nvs_stats_t st;   // the flash the records take: the TULX32 has far less room for them than the TUL32
     if (nvs_get_stats(NVS_PART, &st) == ESP_OK) {
-        printf("%s: %u of %u NVS entries used (32 B each), %u namespaces\n", NVS_PART, (unsigned)st.used_entries,
-               (unsigned)st.total_entries, (unsigned)st.namespace_count);
+        pf(&p, "%s: %u of %u NVS entries used (32 B each), %u usable, %u namespaces\n", NVS_PART,
+           (unsigned)st.used_entries, (unsigned)st.total_entries, (unsigned)(st.used_entries + st.available_entries),
+           (unsigned)st.namespace_count);
     }
     xSemaphoreGive(s_mx);
+    printf("%s", p.b);
+    free(p.b);
 }

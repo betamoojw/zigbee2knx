@@ -3,6 +3,12 @@
 #include "link_sim.c"
 #undef main
 static uint64_t r = 0x9E3779B97F4A7C15ull;
+static unsigned long g_lost;
+static void lost_cb(const knx_frame_t *f)   // what the link gives up comes back whole
+{
+    if (f->len < 1 || f->len > KNX_TPDU_MAX || !f->own) { fprintf(stderr, "given up with len %u\n", f->len); abort(); }
+    g_lost++;
+}
 static uint32_t rnd(void) { r ^= r << 13; r ^= r >> 7; r ^= r << 17; return (uint32_t)(r >> 20); }
 int main(int argc, char **argv)
 {
@@ -12,6 +18,7 @@ int main(int argc, char **argv)
     unsigned long frames = 0, passed = 0, bytes = 0, acks = 0, txs = 0, dups = 0, full = 0;
     for (int k = 0; k < rounds; k++) {
         reset_all();
+        s_lost = lost_cb;
         uint16_t ia[KNX_ACK_IA_MAX], ga[KNX_ACK_GA_MAX];
         int nia = (int)(rnd() % (KNX_ACK_IA_MAX + 1)), nga = (int)(rnd() % (KNX_ACK_GA_MAX + 1));
         for (int i = 0; i < nia; i++) ia[i] = (uint16_t)(rnd() % 4 ? 0xFF00 + rnd() % 16 : rnd());
@@ -65,6 +72,6 @@ int main(int argc, char **argv)
         frames += st.frames; passed += st.passed; bytes += st.bytes; acks += st.acks; txs += st.tx; dups += st.dup; full += st.tx_full;
     }
     printf("%d rounds: %lu octets in, %lu frames with a good checksum, %lu handed on, %lu repetitions dropped, %lu host acks, %lu frames sent, "
-           "%lu refused (queue full)\n", rounds, bytes, frames, passed, dups, acks, txs, full);
+           "%lu refused (queue full), %lu given up and reported\n", rounds, bytes, frames, passed, dups, acks, txs, full, g_lost);
     return 0;
 }

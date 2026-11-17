@@ -36,7 +36,7 @@ stored once per content (its digest is the SHA-256 of the payload) and runs in o
 
 ## Templates of your own
 
-Firmware images of this project trust the project's key only. To run templates of your own:
+Firmware images of this project trust the project's release keys only. To run templates of your own:
 
 1. Make a P-256 key:
 
@@ -48,7 +48,7 @@ Firmware images of this project trust the project's key only. To run templates o
        openssl ec -in my-template-key.pem -pubout -outform DER | tail -c 65 | xxd -i
 
 3. Give the application a number of your own, outside 0xC000–0xC3FF which this project uses, and generate the
-   product file with `--sign-key my-template-key.pem` or `ZIGBEE2KNX_SIGN_KEY`
+   product file with `--sign-key my-template-key.pem` or `ZIGBEE2KNX_SIGN_KEY`, or with `--sign-cmd` through a hardware key that keeps the private key
    ([building-knxprod.md](building-knxprod.md#a-new-application-version)).
 
 Keep the private key out of any repository.

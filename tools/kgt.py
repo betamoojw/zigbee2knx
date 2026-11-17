@@ -114,6 +114,42 @@ def load_signer(path: str):
     return sign
 
 
+def load_command_signer(cmd: str, point: bytes, timeout: float = 120.0):
+    """An external signer, e.g. a hardware key: the command gets the SHA-256 digest of the payload as hex on stdin and
+    prints the signature r||s (64 bytes) as hex on stdout, exit status 0. What it writes to stderr (a prompt to press
+    a button) passes through. Every signature is verified against `point` before it is used, so a wrong key or a
+    broken signer stops the run instead of producing a template no gateway loads."""
+    import shlex
+    import subprocess
+    if len(point) != 65 or point[0] != 4:
+        raise KgtError("public point: 65 bytes, uncompressed (04...)")
+    key = load_trust(points=[point])[fingerprint(point)]
+    fpr = bytes.fromhex(fingerprint(point))
+    argv = shlex.split(cmd)
+    if not argv:
+        raise KgtError("empty signer command")
+
+    def sign(payload: bytes) -> tuple[bytes, bytes]:
+        d = hashlib.sha256(payload).hexdigest()
+        try:
+            r = subprocess.run(argv, input=d + "\n", stdout=subprocess.PIPE, text=True, timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise KgtError(f"signer command: {e}") from e
+        if r.returncode != 0:
+            raise KgtError(f"signer command ended with exit status {r.returncode}")
+        try:
+            sig = bytes.fromhex(r.stdout.strip())
+        except ValueError as e:
+            raise KgtError("signer command: no hex signature on stdout") from e
+        if len(sig) != 64:
+            raise KgtError(f"signer command: {len(sig)} bytes, expected 64 (r||s)")
+        if not _verify(key, sig, payload):
+            raise KgtError(f"the signature of the signer command does not verify with key {fingerprint(point)}")
+        return fpr, sig
+    sign.point = point
+    return sign
+
+
 def load_trust(path: str | None = None, points: list[bytes] | None = None) -> dict:
     """Trusted public keys by fingerprint, from kgt_trust.json and/or raw points."""
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -146,15 +182,13 @@ def pack(m: dict, behaviour_src: str, signer=None) -> bytes:
     return MAGIC_SIGNED + head + fpr + sig + z
 
 
-def unpack(blob: bytes, trust: dict | None = None, allow_unsigned: bool = False) -> tuple[dict, str]:
-    """Blob -> (payload dict, digest); payload["_signed_by"] = key fingerprint or None.
-    Raises KgtError on any inconsistency, on a missing or wrong signature, or on an unknown key."""
+def _open(blob: bytes) -> tuple[str | None, bytes | None, bytes]:
+    """Blob -> (key fingerprint, signature, uncompressed payload); KGT1 has neither key nor signature. Checks the format,
+    the length and the checksum, not the signature."""
     magic = blob[:4]
     if magic == MAGIC_SIGNED and len(blob) >= HEAD_SIGNED:
         head, fpr, sig = HEAD_SIGNED, blob[16:24].hex(), blob[24:88]
     elif magic == MAGIC and len(blob) >= HEAD:
-        if not allow_unsigned:
-            raise KgtError("unsigned template (KGT1) refused")
         head, fpr, sig = HEAD, None, None
     else:
         raise KgtError("no KGT magic")
@@ -165,9 +199,27 @@ def unpack(blob: bytes, trust: dict | None = None, allow_unsigned: bool = False)
     if hashlib.sha256(z).digest()[:8] != blob[8:16]:
         raise KgtError("payload checksum differs")
     try:
-        payload = zlib.decompress(z)
+        return fpr, sig, zlib.decompress(z)
     except zlib.error as e:
         raise KgtError(f"payload unreadable: {e}") from None
+
+
+def peek(blob: bytes) -> tuple[dict, str, str | None]:
+    """Blob -> (payload dict, digest, key fingerprint or None), the signature not checked: for tools that look at a
+    product file. Never a way to load a template."""
+    fpr, _, payload = _open(blob)
+    try:
+        return json.loads(payload), digest(payload), fpr
+    except ValueError as e:
+        raise KgtError(f"payload unreadable: {e}") from None
+
+
+def unpack(blob: bytes, trust: dict | None = None, allow_unsigned: bool = False) -> tuple[dict, str]:
+    """Blob -> (payload dict, digest); payload["_signed_by"] = key fingerprint or None.
+    Raises KgtError on any inconsistency, on a missing or wrong signature, or on an unknown key."""
+    fpr, sig, payload = _open(blob)
+    if fpr is None and not allow_unsigned:
+        raise KgtError("unsigned template (KGT1) refused")
     if fpr is not None:
         key = (trust or {}).get(fpr)
         if key is None:

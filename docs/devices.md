@@ -4,9 +4,21 @@ The products in the files of `producer/`, one table per class. Every class also 
 
 The lists come from the Zigbee2MQTT device definitions (zigbee-herdsman-converters 26.57.0). Only the devices named in [Status](../README.md#status) have run on a gateway; the others are listed because their definitions fall into the class.
 
+In the ETS catalog the products lie in the section **Zigbee2KNX**, in one subsection per kind of device: Gateway (0xC000), Lights (0xC001, 0xC002), Plugs and switches (0xC003), Remotes (0xC004). Earlier versions of the product files put everything into one section "Devices"; products imported from those stay there.
+
+| Application | Version | Replaces |
+|---|---|---|
+| 0xC000 gateway | 3 | 1, 2 |
+| 0xC001 dimmable light | 3 | 2 |
+| 0xC002 white spectrum light | 4 | 2, 3 |
+| 0xC003 switch and plug | 3 | 1, 2 |
+| 0xC004 remote | 2 | 1 |
+
+A new version keeps the group objects and parameters of the earlier ones with their numbers and meaning, so that ETS can update a device to it. The versions that have been given out are listed in `producer/issued.json`.
+
 ## Dimmable light (0xC001)
 
-23 models.
+23 models. Catalog: Zigbee2KNX › Lights. Relative dimming (DPT 3.007) moves by the step the telegram carries, 1/2^(code-1) of the range, within the minimum and maximum brightness.
 
 | Model | Description |
 |---|---|
@@ -36,7 +48,7 @@ The lists come from the Zigbee2MQTT device definitions (zigbee-herdsman-converte
 
 ## White spectrum light (0xC002)
 
-48 models.
+48 models. Catalog: Zigbee2KNX › Lights. Relative dimming of brightness and of colour temperature moves by the step the telegram carries; step code 1 of the colour temperature fades until a stop telegram or the end of the lamp's range.
 
 | Model | Description |
 |---|---|
@@ -91,7 +103,7 @@ The lists come from the Zigbee2MQTT device definitions (zigbee-herdsman-converte
 
 ## Switch and plug (0xC003)
 
-14 models.
+14 models. Catalog: Zigbee2KNX › Plugs and switches.
 
 | Model | Description |
 |---|---|
@@ -112,7 +124,11 @@ The lists come from the Zigbee2MQTT device definitions (zigbee-herdsman-converte
 
 ## Remote (experimental) (0xC004)
 
-6 models.
+6 models. Catalog: Zigbee2KNX › Remotes.
+
+- A Zigbee "step" becomes the dimming step (DPT 3.007) nearest to the step size the remote sends.
+- Battery: the remotes report BatteryPercentageRemaining in half percent, except the ones Zigbee2MQTT reads as percent: the ICTC-G-1 always, the E1743, E1744, E1812 and E1841 with a firmware below 2.4.0. The gateway reads the firmware version from the device.
+- "Zigbee device heard in the last 25 h": a remote sleeps and is never asked. The object turns 1 with the first frame from it and 0 after 25 h without one, also when the remote is only not used. After a restart of the gateway it has no value until the remote sends something.
 
 | Model | Description |
 |---|---|

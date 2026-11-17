@@ -3,18 +3,19 @@
 The files in `producer/` are inputs for [OpenKNXproducer](https://github.com/OpenKNX/OpenKNXproducer): one file per
 class, with the class's application, its catalog products and the embedded, signed template. OpenKNXproducer turns
 each file into a `.knxprod` and has it signed by the signing library of an installed ETS, so the build runs on a
-Windows PC with ETS 5 or ETS 6.
+Windows PC with ETS.
 
-Tested with OpenKNXproducer 4.3.12 and ETS 6.4.1: run its `create` command on each XML file and import the resulting
-`.knxprod` files into ETS. The releases of this project carry the same files ready built.
+Tested with OpenKNXproducer 4.3.12 and ETS 6.4.1: run `OpenKNXproducer create <name>` in a folder with the XML files,
+once per file (for example `OpenKNXproducer create zigbee-switch` for `zigbee-switch.xml`), and import the resulting
+`.knxprod` files into ETS.
 
-| File | Application |
-|---|---|
-| `zigbee-gateway.xml` | 0xC000 Zigbee gateway |
-| `zigbee-dimmable-light.xml` | 0xC001 dimmable light |
-| `zigbee-white-spectrum-light.xml` | 0xC002 white spectrum light |
-| `zigbee-switch.xml` | 0xC003 switch and plug |
-| `zigbee-remote.xml` | 0xC004 remote |
+| File | Application | Version | Catalog section |
+|---|---|---|---|
+| `zigbee-gateway.xml` | 0xC000 Zigbee gateway | 3 | Zigbee2KNX / Gateway |
+| `zigbee-dimmable-light.xml` | 0xC001 dimmable light | 3 | Zigbee2KNX / Lights |
+| `zigbee-white-spectrum-light.xml` | 0xC002 white spectrum light | 4 | Zigbee2KNX / Lights |
+| `zigbee-switch.xml` | 0xC003 switch and plug | 3 | Zigbee2KNX / Plugs and switches |
+| `zigbee-remote.xml` | 0xC004 remote | 2 | Zigbee2KNX / Remotes |
 
 The applications use the manufacturer ID M-00FA (KNX Association), as open-source KNX projects do. They are not
 registered with the KNX Association.
@@ -23,8 +24,8 @@ registered with the KNX Association.
 
 ETS identifies an application by an ID that the signing library computes from its content. Built from the same XML,
 an application gets the same ID: two builds with the signing library of ETS 6.4.1 (OpenKNXproducer on Windows and an
-independent build) gave the same IDs. So a `.knxprod` you build yourself and the one attached to a release can be
-used side by side.
+independent build) gave the same IDs and the same files. So `.knxprod` files built from the same XML on different PCs
+can be used side by side.
 
 Any change inside an application gives it another ID, even a new signature over the same template. ETS then sees
 another application, and devices loaded with the old one have to be replaced. A released file is therefore never
@@ -51,8 +52,16 @@ A model the class's template does not list runs with the class defaults, and the
 
 `distill/knxprod_products.py templates/<class>` runs the whole chain for a class: `tools/knxprod_gen.py` writes the
 application with the template embedded and signed, then the products of the manifest are added. The gateway's file
-comes from `producer/gateway_build.py`. Both need the private key of a key the firmware trusts (`--sign-key PEM` or
-`ZIGBEE2KNX_SIGN_KEY`); see [templates.md](templates.md) for working with your own key.
+comes from `producer/gateway_build.py`; its application embeds no template and is not signed.
 
-Raise `knx.application.version` in the manifest and list the versions it replaces in `knx.application.replaces`
-before such a run.
+The template is signed with a key the firmware trusts, either from a file (`--sign-key PEM`, or
+`ZIGBEE2KNX_SIGN_KEY`) or through an external signer such as a hardware key (`--sign-cmd CMD` with the signer's public
+key as `--sign-pub HEX` or, by fingerprint from `tools/kgt_trust.json`, `--sign-fpr FPR`). The command gets the
+SHA-256 digest of the payload as hex on stdin and prints the signature r||s as hex; every signature is checked
+before it is used. See [templates.md](templates.md) for working with your own key.
+
+`producer/issued.json` lists every application version that has been given out (imported into an ETS installation).
+Before such a run, raise `knx.application.version` in the manifest: ReplacesVersions is taken from that list, and the
+generators refuse to write an issued version with other content, or a version that changes the meaning of an object
+number or parameter id of an issued one. After a new version has been imported, `tools/knxprod_gen.py --issued-record
+XML APP_ID` prints its entry for the list. `tests/test_issued.py` checks the producer files against the list.

@@ -181,6 +181,26 @@ def changed_template():
         raises("a manifest of another application version: refused", lambda: kp.same_template(xml, t), "version")
 
 
+def order_numbers():
+    print("order numbers and texts (OrderNumber is String50_t in the KNX schema; %…% is a placeholder of the build tools)")
+    xml = load(os.path.join(ROOT, "producer", "zigbee-switch.xml"))
+    base = {"vendor": "Example", "description": "a plug"}
+    _, added, _, _ = kp.append_products(xml, [dict(base, model="X" * 50)])
+    check("an order number of 50 characters is taken", added == ["X" * 50], str(added))
+    raises("51 characters: refused", lambda: kp.append_products(xml, [dict(base, model="X" * 51)]), "at most 50")
+    raises("an order number the file holds, in other case: refused",
+           lambda: kp.append_products(xml, [dict(base, model="e1603")]), "twice (as 'E1603')")
+    raises("blanks at the ends: refused", lambda: kp.append_products(xml, [dict(base, model=" E1603 ")]), "blanks")
+    raises("two in one list that differ only in case: refused",
+           lambda: kp.append_products(xml, [dict(base, model="EX-9"), dict(base, model="ex-9")]), "twice")
+    raises("the full run's product step: two that differ only in case",
+           lambda: kp.add_products(cut(xml, 1), [dict(base, model="EX-9"), dict(base, model="Ex-9")], "en"), "twice")
+    raises("'%' in an order number", lambda: kp.append_products(xml, [dict(base, model="%AB%")]), "'%' in model")
+    raises("'%' in a description", lambda: kp.append_products(xml, [dict(base, model="EX-8", description="%off%")]),
+           "'%' in description")
+    raises("'%' in a vendor", lambda: kp.append_products(xml, [dict(base, model="EX-7", vendor="%AID%")]), "'%' in vendor")
+
+
 def command_line():
     print("the command")
     with tempfile.TemporaryDirectory() as td:
@@ -220,6 +240,7 @@ if __name__ == "__main__":
     classes()
     foreign()
     changed_template()
+    order_numbers()
     command_line()
     print(f"{count} checks, {failed} failed")
     sys.exit(1 if failed else 0)

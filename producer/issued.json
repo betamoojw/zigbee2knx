@@ -1,0 +1,438 @@
+{
+  "_doc": "Application versions given out: imported into an ETS, so that devices in projects may carry them. Such a version is never generated again with other content (application_sha256: the ApplicationProgram element of its producer input). A later version of the same application keeps the object numbers and parameter ids with their meaning (objects by number: [Name, ObjectSize, DatapointType]; parameters P-n: [Name, offset in the parameter segment, parameter type]; parameter types: [kind, bits, values or range]) and names every lower version given out in ReplacesVersions. tools/knxprod_gen.py --issued-record prints the entry of a new version once it has been imported. history: other application numbers given out before, without a relation to these.",
+  "applications": [
+    {
+      "number": 49152,
+      "version": 1,
+      "id": "M-00FA_A-C000-01-6A6F",
+      "producer": "zigbee-gateway.xml",
+      "template": null,
+      "application_sha256": "c0510f0d2963e66cb58e1171f668751c6438dfc6d92e19fce03168bc12d200cd",
+      "objects": {
+        "1": ["Pairing", "1 Bit", "DPST-1-10"],
+        "2": ["PairingActive", "1 Bit", "DPST-1-11"],
+        "3": ["Devices", "1 Byte", "DPST-5-10"],
+        "4": ["Waiting", "1 Byte", "DPST-5-10"]
+      },
+      "parameters": {
+        "1": ["EtsBinding", 0, "YesNo"],
+        "2": ["FirstDevice", 1, "DeviceNumber"],
+        "3": ["LastDevice", 2, "DeviceNumber"],
+        "4": ["PairingWindow", 3, "Seconds"]
+      },
+      "parameter_types": {
+        "YesNo": ["enum", 8, [[0, "no"], [1, "yes"]]],
+        "DeviceNumber": ["number", 8, "unsignedInt", 1, 254],
+        "Seconds": ["number", 8, "unsignedInt", 10, 254]
+      }
+    },
+    {
+      "number": 49152,
+      "version": 2,
+      "id": "M-00FA_A-C000-02-0710",
+      "producer": "zigbee-gateway.xml",
+      "template": null,
+      "application_sha256": "1244b3cca53d1ffa2d6b86921d43bf7e62b94bdefb359b7149e8a931c51f421f",
+      "objects": {
+        "1": ["Pairing", "1 Bit", "DPST-1-10"],
+        "2": ["PairingActive", "1 Bit", "DPST-1-11"],
+        "3": ["Devices", "1 Byte", "DPST-5-10"],
+        "4": ["Waiting", "1 Byte", "DPST-5-10"],
+        "5": ["FreePlaces", "1 Byte", "DPST-5-10"],
+        "6": ["FreeHeap", "4 Bytes", "DPST-12-1"],
+        "7": ["FreeHeapMin", "4 Bytes", "DPST-12-1"],
+        "8": ["LargestBlock", "4 Bytes", "DPST-12-1"],
+        "9": ["ClassVMs", "1 Byte", "DPST-5-10"],
+        "10": ["StorageUsed", "1 Byte", "DPST-5-1"],
+        "11": ["LastMessage", "14 Bytes", "DPST-16-1"],
+        "12": ["Fault", "1 Bit", "DPST-1-5"]
+      },
+      "parameters": {
+        "1": ["EtsBinding", 0, "YesNo"],
+        "2": ["FirstDevice", 1, "DeviceNumber"],
+        "3": ["LastDevice", 2, "DeviceNumber"],
+        "4": ["PairingWindow", 3, "Seconds"]
+      },
+      "parameter_types": {
+        "YesNo": ["enum", 8, [[0, "no"], [1, "yes"]]],
+        "DeviceNumber": ["number", 8, "unsignedInt", 1, 254],
+        "Seconds": ["number", 8, "unsignedInt", 10, 254]
+      }
+    },
+    {
+      "number": 49152,
+      "version": 3,
+      "id": "M-00FA_A-C000-03-49BE",
+      "producer": "zigbee-gateway.xml",
+      "template": null,
+      "application_sha256": "d253cba155c4405acb021d4bf31d7ff46485a2b38a9a6fdba21b84ae1db36017",
+      "objects": {
+        "1": ["Pairing", "1 Bit", "DPST-1-10"],
+        "2": ["PairingActive", "1 Bit", "DPST-1-11"],
+        "3": ["Devices", "1 Byte", "DPST-5-10"],
+        "4": ["Waiting", "1 Byte", "DPST-5-10"],
+        "5": ["FreePlaces", "1 Byte", "DPST-5-10"],
+        "6": ["FreeHeap", "4 Bytes", "DPST-12-1"],
+        "7": ["FreeHeapMin", "4 Bytes", "DPST-12-1"],
+        "8": ["LargestBlock", "4 Bytes", "DPST-12-1"],
+        "9": ["ClassVMs", "1 Byte", "DPST-5-10"],
+        "10": ["StorageUsed", "1 Byte", "DPST-5-1"],
+        "11": ["LastMessage", "14 Bytes", "DPST-16-1"],
+        "12": ["Fault", "1 Bit", "DPST-1-5"]
+      },
+      "parameters": {
+        "1": ["EtsBinding", 0, "YesNo"],
+        "2": ["FirstDevice", 1, "DeviceNumber"],
+        "3": ["LastDevice", 2, "DeviceNumber"],
+        "4": ["PairingWindow", 3, "Seconds"],
+        "5": ["LongFrames", 4, "LongFrames"]
+      },
+      "parameter_types": {
+        "YesNo": ["enum", 8, [[0, "no"], [1, "yes"]]],
+        "DeviceNumber": ["number", 8, "unsignedInt", 1, 254],
+        "Seconds": ["number", 8, "unsignedInt", 10, 254],
+        "LongFrames": ["enum", 8, [[0, "Standard frames only"], [1, "Long frames, 55 octets"], [2, "Long frames, 66 octets"]]]
+      }
+    },
+    {
+      "number": 49153,
+      "version": 2,
+      "id": "M-00FA_A-C001-02-503B",
+      "producer": "zigbee-dimmable-light.xml",
+      "template": {"id": "zigbee.class.dimmable", "version": 1, "digest": "8806274275f0ebb1"},
+      "application_sha256": "ba47c7a09b076453dd51b3825a3988a891452bbbbd925f55fdc4e228bb45c95d",
+      "objects": {
+        "1": ["Switch", "1 Bit", "DPST-1-1"],
+        "2": ["Dimming", "4 Bit", "DPST-3-7"],
+        "3": ["Value", "1 Byte", "DPST-5-1"],
+        "4": ["SwitchStatus", "1 Bit", "DPST-1-1"],
+        "5": ["ValueStatus", "1 Byte", "DPST-5-1"],
+        "6": ["Identify", "1 Bit", "DPST-1-17"]
+      },
+      "parameters": {
+        "1": ["PowerOnBehaviour", 0, "PowerOn"],
+        "2": ["StartupLevel", 1, "StartLevel"],
+        "3": ["StartupLevelValue", 2, "Percent"],
+        "4": ["SwitchOnValue", 3, "Percent"],
+        "5": ["MemoryFunction", 4, "YesNo"],
+        "6": ["MinimumValue", 5, "Percent"],
+        "7": ["MaximumValue", 6, "Percent"],
+        "8": ["RelativeOffEnable", 7, "YesNo"],
+        "9": ["TransitionTime", 8, "Tenths"],
+        "10": ["DimmingRate", 9, "Rate"]
+      },
+      "parameter_types": {
+        "PowerOn": ["enum", 8, [[0, "off"], [1, "on"], [2, "toggle"], [3, "previous"]]],
+        "StartLevel": ["enum", 8, [[0, "minimum"], [1, "previous"], [2, "fixed value"]]],
+        "Percent": ["number", 8, "unsignedInt", 1, 100],
+        "YesNo": ["enum", 8, [[0, "no"], [1, "yes"]]],
+        "Tenths": ["number", 8, "unsignedInt", 0, 255],
+        "Rate": ["number", 8, "unsignedInt", 1, 255]
+      }
+    },
+    {
+      "number": 49153,
+      "version": 3,
+      "id": "M-00FA_A-C001-03-249F",
+      "producer": "zigbee-dimmable-light.xml",
+      "template": {"id": "zigbee.class.dimmable", "version": 3, "digest": "8f9d79bb5062d819"},
+      "application_sha256": "e0bc77472d1e60d2cf2c5f90b3d769907ce3bb3f544de7cfe8bec1446212246f",
+      "objects": {
+        "1": ["Switch", "1 Bit", "DPST-1-1"],
+        "2": ["Dimming", "4 Bit", "DPST-3-7"],
+        "3": ["Value", "1 Byte", "DPST-5-1"],
+        "4": ["SwitchStatus", "1 Bit", "DPST-1-1"],
+        "5": ["ValueStatus", "1 Byte", "DPST-5-1"],
+        "6": ["Identify", "1 Bit", "DPST-1-17"],
+        "7": ["Available", "1 Bit", "DPST-1-2"]
+      },
+      "parameters": {
+        "1": ["PowerOnBehaviour", 0, "PowerOn"],
+        "2": ["StartupLevel", 1, "StartLevel"],
+        "3": ["StartupLevelValue", 2, "Percent"],
+        "4": ["SwitchOnValue", 3, "Percent"],
+        "5": ["MemoryFunction", 4, "YesNo"],
+        "6": ["MinimumValue", 5, "Percent"],
+        "7": ["MaximumValue", 6, "Percent"],
+        "8": ["RelativeOffEnable", 7, "YesNo"],
+        "9": ["TransitionTime", 8, "Tenths"],
+        "10": ["DimmingRate", 9, "Rate"]
+      },
+      "parameter_types": {
+        "PowerOn": ["enum", 8, [[0, "off"], [1, "on"], [2, "toggle"], [3, "previous"]]],
+        "StartLevel": ["enum", 8, [[0, "minimum"], [1, "previous"], [2, "fixed value"]]],
+        "Percent": ["number", 8, "unsignedInt", 1, 100],
+        "YesNo": ["enum", 8, [[0, "no"], [1, "yes"]]],
+        "Tenths": ["number", 8, "unsignedInt", 0, 255],
+        "Rate": ["number", 8, "unsignedInt", 1, 255]
+      }
+    },
+    {
+      "number": 49154,
+      "version": 2,
+      "id": "M-00FA_A-C002-02-CB42",
+      "producer": "zigbee-white-spectrum-light.xml",
+      "template": {"id": "zigbee.class.white_spectrum", "version": 1, "digest": "a1deb59cf76eb0ab"},
+      "application_sha256": "791dc75dc62c376f3a5979d3dd908c32f6b997998e784548e1fb71cf7186cb93",
+      "objects": {
+        "1": ["Switch", "1 Bit", "DPST-1-1"],
+        "2": ["Dimming", "4 Bit", "DPST-3-7"],
+        "3": ["Value", "1 Byte", "DPST-5-1"],
+        "4": ["SwitchStatus", "1 Bit", "DPST-1-1"],
+        "5": ["ValueStatus", "1 Byte", "DPST-5-1"],
+        "6": ["Identify", "1 Bit", "DPST-1-17"],
+        "7": ["ColourTemperature", "2 Bytes", "DPST-7-600"],
+        "8": ["ColourTemperatureRelative", "4 Bit", "DPST-3-7"],
+        "9": ["ColourTemperatureStatus", "2 Bytes", "DPST-7-600"],
+        "10": ["ColourTemperatureOutOfRange", "1 Bit", "DPST-1-2"]
+      },
+      "parameters": {
+        "1": ["PowerOnBehaviour", 0, "PowerOn"],
+        "2": ["StartupLevel", 1, "StartLevel"],
+        "3": ["StartupLevelValue", 2, "Percent"],
+        "4": ["SwitchOnValue", 3, "Percent"],
+        "5": ["MemoryFunction", 4, "YesNo"],
+        "6": ["MinimumValue", 5, "Percent"],
+        "7": ["MaximumValue", 6, "Percent"],
+        "8": ["RelativeOffEnable", 7, "YesNo"],
+        "9": ["TransitionTime", 8, "Tenths"],
+        "10": ["DimmingRate", 9, "Rate"],
+        "11": ["CtMinimum", 10, "Kelvin"],
+        "12": ["CtMaximum", 12, "Kelvin"],
+        "13": ["CtSwitchOnMode", 14, "CtSwitchOn"],
+        "14": ["CtSwitchOnValue", 15, "Kelvin"],
+        "15": ["CtRate", 17, "Rate"],
+        "16": ["CtFade", 18, "YesNo"],
+        "17": ["CtStartup", 19, "CtStartup"],
+        "18": ["CtStartupValue", 20, "Kelvin"]
+      },
+      "parameter_types": {
+        "PowerOn": ["enum", 8, [[0, "off"], [1, "on"], [2, "toggle"], [3, "previous"]]],
+        "StartLevel": ["enum", 8, [[0, "minimum"], [1, "previous"], [2, "fixed value"]]],
+        "Percent": ["number", 8, "unsignedInt", 1, 100],
+        "YesNo": ["enum", 8, [[0, "no"], [1, "yes"]]],
+        "Tenths": ["number", 8, "unsignedInt", 0, 255],
+        "Rate": ["number", 8, "unsignedInt", 1, 255],
+        "Kelvin": ["number", 16, "unsignedInt", 1000, 10000],
+        "CtSwitchOn": ["enum", 8, [[0, "last actual value"], [1, "value of the next parameter"], [2, "last received absolute value"]]],
+        "CtStartup": ["enum", 8, [[0, "previous"], [1, "fixed value"]]]
+      }
+    },
+    {
+      "number": 49154,
+      "version": 3,
+      "id": "M-00FA_A-C002-03-E2F3",
+      "producer": "zigbee-white-spectrum-light.xml",
+      "template": {"id": "zigbee.class.white_spectrum", "version": 2, "digest": "f2e7d32306a8c742"},
+      "application_sha256": "2f17e1aebe44418b3782c8978d0ff5c7d194876a27edf74346da77d038648e0d",
+      "objects": {
+        "1": ["Switch", "1 Bit", "DPST-1-1"],
+        "2": ["Dimming", "4 Bit", "DPST-3-7"],
+        "3": ["Value", "1 Byte", "DPST-5-1"],
+        "4": ["SwitchStatus", "1 Bit", "DPST-1-1"],
+        "5": ["ValueStatus", "1 Byte", "DPST-5-1"],
+        "6": ["Identify", "1 Bit", "DPST-1-17"],
+        "7": ["ColourTemperature", "2 Bytes", "DPST-7-600"],
+        "8": ["ColourTemperatureRelative", "4 Bit", "DPST-3-7"],
+        "9": ["ColourTemperatureStatus", "2 Bytes", "DPST-7-600"],
+        "10": ["ColourTemperatureOutOfRange", "1 Bit", "DPST-1-2"],
+        "11": ["Available", "1 Bit", "DPST-1-2"]
+      },
+      "parameters": {
+        "1": ["PowerOnBehaviour", 0, "PowerOn"],
+        "2": ["StartupLevel", 1, "StartLevel"],
+        "3": ["StartupLevelValue", 2, "Percent"],
+        "4": ["SwitchOnValue", 3, "Percent"],
+        "5": ["MemoryFunction", 4, "YesNo"],
+        "6": ["MinimumValue", 5, "Percent"],
+        "7": ["MaximumValue", 6, "Percent"],
+        "8": ["RelativeOffEnable", 7, "YesNo"],
+        "9": ["TransitionTime", 8, "Tenths"],
+        "10": ["DimmingRate", 9, "Rate"],
+        "11": ["CtMinimum", 10, "Kelvin"],
+        "12": ["CtMaximum", 12, "Kelvin"],
+        "13": ["CtSwitchOnMode", 14, "CtSwitchOn"],
+        "14": ["CtSwitchOnValue", 15, "Kelvin"],
+        "15": ["CtRate", 17, "Rate"],
+        "16": ["CtFade", 18, "YesNo"],
+        "17": ["CtStartup", 19, "CtStartup"],
+        "18": ["CtStartupValue", 20, "Kelvin"]
+      },
+      "parameter_types": {
+        "PowerOn": ["enum", 8, [[0, "off"], [1, "on"], [2, "toggle"], [3, "previous"]]],
+        "StartLevel": ["enum", 8, [[0, "minimum"], [1, "previous"], [2, "fixed value"]]],
+        "Percent": ["number", 8, "unsignedInt", 1, 100],
+        "YesNo": ["enum", 8, [[0, "no"], [1, "yes"]]],
+        "Tenths": ["number", 8, "unsignedInt", 0, 255],
+        "Rate": ["number", 8, "unsignedInt", 1, 255],
+        "Kelvin": ["number", 16, "unsignedInt", 1000, 10000],
+        "CtSwitchOn": ["enum", 8, [[0, "last actual value"], [1, "value of the next parameter"], [2, "last received absolute value"]]],
+        "CtStartup": ["enum", 8, [[0, "previous"], [1, "fixed value"]]]
+      }
+    },
+    {
+      "number": 49154,
+      "version": 4,
+      "id": "M-00FA_A-C002-04-F083",
+      "producer": "zigbee-white-spectrum-light.xml",
+      "template": {"id": "zigbee.class.white_spectrum", "version": 4, "digest": "baa4dafd557641b8"},
+      "application_sha256": "1f031ccebaa22fbca7cab8a18e415cdefcf6d5a91f55f8ae5efd79ff23006247",
+      "objects": {
+        "1": ["Switch", "1 Bit", "DPST-1-1"],
+        "2": ["Dimming", "4 Bit", "DPST-3-7"],
+        "3": ["Value", "1 Byte", "DPST-5-1"],
+        "4": ["SwitchStatus", "1 Bit", "DPST-1-1"],
+        "5": ["ValueStatus", "1 Byte", "DPST-5-1"],
+        "6": ["Identify", "1 Bit", "DPST-1-17"],
+        "7": ["ColourTemperature", "2 Bytes", "DPST-7-600"],
+        "8": ["ColourTemperatureRelative", "4 Bit", "DPST-3-7"],
+        "9": ["ColourTemperatureStatus", "2 Bytes", "DPST-7-600"],
+        "10": ["ColourTemperatureOutOfRange", "1 Bit", "DPST-1-2"],
+        "11": ["Available", "1 Bit", "DPST-1-2"]
+      },
+      "parameters": {
+        "1": ["PowerOnBehaviour", 0, "PowerOn"],
+        "2": ["StartupLevel", 1, "StartLevel"],
+        "3": ["StartupLevelValue", 2, "Percent"],
+        "4": ["SwitchOnValue", 3, "Percent"],
+        "5": ["MemoryFunction", 4, "YesNo"],
+        "6": ["MinimumValue", 5, "Percent"],
+        "7": ["MaximumValue", 6, "Percent"],
+        "8": ["RelativeOffEnable", 7, "YesNo"],
+        "9": ["TransitionTime", 8, "Tenths"],
+        "10": ["DimmingRate", 9, "Rate"],
+        "11": ["CtMinimum", 10, "Kelvin"],
+        "12": ["CtMaximum", 12, "Kelvin"],
+        "13": ["CtSwitchOnMode", 14, "CtSwitchOn"],
+        "14": ["CtSwitchOnValue", 15, "Kelvin"],
+        "15": ["CtRate", 17, "Rate"],
+        "16": ["CtFade", 18, "YesNo"],
+        "17": ["CtStartup", 19, "CtStartup"],
+        "18": ["CtStartupValue", 20, "Kelvin"]
+      },
+      "parameter_types": {
+        "PowerOn": ["enum", 8, [[0, "off"], [1, "on"], [2, "toggle"], [3, "previous"]]],
+        "StartLevel": ["enum", 8, [[0, "minimum"], [1, "previous"], [2, "fixed value"]]],
+        "Percent": ["number", 8, "unsignedInt", 1, 100],
+        "YesNo": ["enum", 8, [[0, "no"], [1, "yes"]]],
+        "Tenths": ["number", 8, "unsignedInt", 0, 255],
+        "Rate": ["number", 8, "unsignedInt", 1, 255],
+        "Kelvin": ["number", 16, "unsignedInt", 1000, 10000],
+        "CtSwitchOn": ["enum", 8, [[0, "last actual value"], [1, "value of the next parameter"], [2, "last received absolute value"]]],
+        "CtStartup": ["enum", 8, [[0, "previous"], [1, "fixed value"]]]
+      }
+    },
+    {
+      "number": 49155,
+      "version": 1,
+      "id": "M-00FA_A-C003-01-80E3",
+      "producer": "zigbee-switch.xml",
+      "template": {"id": "zigbee.class.switch", "version": 1, "digest": "af5cabd989ac3f46"},
+      "application_sha256": "d77463dd772868d77ebf3da73be1cba90087f87a373b2e8cae7311a3f6c7450a",
+      "objects": {
+        "1": ["Switch", "1 Bit", "DPST-1-1"],
+        "2": ["SwitchStatus", "1 Bit", "DPST-1-1"],
+        "3": ["Identify", "1 Bit", "DPST-1-17"]
+      },
+      "parameters": {
+        "1": ["PowerOnBehaviour", 0, "PowerOn"],
+        "2": ["ChildLock", 1, "YesNo"]
+      },
+      "parameter_types": {
+        "PowerOn": ["enum", 8, [[0, "off"], [1, "on"], [2, "toggle"], [3, "previous"]]],
+        "YesNo": ["enum", 8, [[0, "no"], [1, "yes"]]]
+      }
+    },
+    {
+      "number": 49155,
+      "version": 2,
+      "id": "M-00FA_A-C003-02-129B",
+      "producer": "zigbee-switch.xml",
+      "template": {"id": "zigbee.class.switch", "version": 2, "digest": "8c8256e8c33ed243"},
+      "application_sha256": "b7d4b92a5637f6ee253e25a288dccb6d97fcb32ba1981eb4f17c897b92bf09d1",
+      "objects": {
+        "1": ["Switch", "1 Bit", "DPST-1-1"],
+        "2": ["SwitchStatus", "1 Bit", "DPST-1-1"],
+        "3": ["Identify", "1 Bit", "DPST-1-17"],
+        "4": ["Available", "1 Bit", "DPST-1-2"]
+      },
+      "parameters": {
+        "1": ["PowerOnBehaviour", 0, "PowerOn"],
+        "2": ["ChildLock", 1, "YesNo"]
+      },
+      "parameter_types": {
+        "PowerOn": ["enum", 8, [[0, "off"], [1, "on"], [2, "toggle"], [3, "previous"]]],
+        "YesNo": ["enum", 8, [[0, "no"], [1, "yes"]]]
+      }
+    },
+    {
+      "number": 49155,
+      "version": 3,
+      "id": "M-00FA_A-C003-03-41C6",
+      "producer": "zigbee-switch.xml",
+      "template": {"id": "zigbee.class.switch", "version": 3, "digest": "187c0d5fbbcf88a4"},
+      "application_sha256": "16f20404ae23cab8daa0342ca426ca684ef01fea1406f1d2637e3bb5b5adb701",
+      "objects": {
+        "1": ["Switch", "1 Bit", "DPST-1-1"],
+        "2": ["SwitchStatus", "1 Bit", "DPST-1-1"],
+        "3": ["Identify", "1 Bit", "DPST-1-17"],
+        "4": ["Available", "1 Bit", "DPST-1-2"]
+      },
+      "parameters": {
+        "1": ["PowerOnBehaviour", 0, "PowerOn"],
+        "2": ["ChildLock", 1, "YesNo"]
+      },
+      "parameter_types": {
+        "PowerOn": ["enum", 8, [[0, "off"], [1, "on"], [2, "toggle"], [3, "previous"]]],
+        "YesNo": ["enum", 8, [[0, "no"], [1, "yes"]]]
+      }
+    },
+    {
+      "number": 49156,
+      "version": 1,
+      "id": "M-00FA_A-C004-01-C48B",
+      "producer": "zigbee-remote.xml",
+      "template": {"id": "zigbee.class.remote", "version": 1, "digest": "6f885724c86cf15b"},
+      "application_sha256": "bda67bd195616ef7c1f89f4a3f2d296a153dacbb049a0f351a7c5dbce00b494f",
+      "objects": {
+        "1": ["Switch", "1 Bit", "DPST-1-1"],
+        "2": ["Dimming", "4 Bit", "DPST-3-7"],
+        "3": ["Value", "1 Byte", "DPST-5-1"],
+        "4": ["Battery", "1 Byte", "DPST-5-1"],
+        "5": ["SwitchStatus", "1 Bit", "DPST-1-1"]
+      },
+      "parameters": {
+        "1": ["InvertSwitch", 0, "YesNo"]
+      },
+      "parameter_types": {
+        "YesNo": ["enum", 8, [[0, "no"], [1, "yes"]]]
+      }
+    },
+    {
+      "number": 49156,
+      "version": 2,
+      "id": "M-00FA_A-C004-02-7F2A",
+      "producer": "zigbee-remote.xml",
+      "template": {"id": "zigbee.class.remote", "version": 2, "digest": "5c5c91811ed3e202"},
+      "application_sha256": "485ce86e8b6ee50e39d2024f9e414387d9c74408414c0e1086b7fae1abc165e6",
+      "objects": {
+        "1": ["Switch", "1 Bit", "DPST-1-1"],
+        "2": ["Dimming", "4 Bit", "DPST-3-7"],
+        "3": ["Value", "1 Byte", "DPST-5-1"],
+        "4": ["Battery", "1 Byte", "DPST-5-1"],
+        "5": ["SwitchStatus", "1 Bit", "DPST-1-1"],
+        "6": ["Available", "1 Bit", "DPST-1-2"]
+      },
+      "parameters": {
+        "1": ["InvertSwitch", 0, "YesNo"]
+      },
+      "parameter_types": {
+        "YesNo": ["enum", 8, [[0, "no"], [1, "yes"]]]
+      }
+    }
+  ],
+  "history": [
+    {"number": 65056, "version": 1, "id": "M-00FA_A-FE20-01-5DA4", "note": "first number of the dimmable light class"},
+    {"number": 65057, "version": 1, "id": "M-00FA_A-FE21-01-ADDA", "note": "first number of the white spectrum light class"}
+  ]
+}

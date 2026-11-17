@@ -1,7 +1,7 @@
 {
   "schema": "knxgw-template/0",
   "id": "zigbee.class.switch",
-  "version": 2,
+  "version": 3,
   "title": "Zigbee switch as a KNX switching actuator",
   "radio": "zigbee",
   "match": {
@@ -217,7 +217,7 @@
     }
   ],
   "generated": {
-    "by": "distill/z2m_to_knx.py v3",
+    "by": "distill/z2m_to_knx.py v4",
     "from": "zigbee-herdsman-converters 26.57.0",
     "models": 4
   },
@@ -236,9 +236,10 @@
     "application": {
       "name": "Zigbee switch",
       "number": 49155,
-      "version": 2,
+      "version": 3,
       "replaces": [
-        1
+        1,
+        2
       ],
       "mask": "MV-07B0",
       "order_info": "ZB-SWITCH"
@@ -248,11 +249,20 @@
       "serial_number": "49155",
       "version": 1,
       "bus_current_ma": 0,
+      "nonreg_version": 1,
       "order_number": "ZB-SWITCH"
     },
     "catalog": {
-      "section": "Devices",
-      "section_number": "1",
+      "sections": [
+        {
+          "number": "Zigbee2KNX",
+          "name": "Zigbee2KNX"
+        },
+        {
+          "number": "PlugsSwitches",
+          "name": "Plugs and switches"
+        }
+      ],
       "item_number": "1"
     },
     "objects": [
@@ -284,7 +294,7 @@
         "size": "1 Bit",
         "flags": "CW",
         "dpt": "1.017",
-        "zigbee": "identify, models with flag 2"
+        "zigbee": "identify on 0 and 1 alike (DPT 1.017 trigger), models with flag 2"
       },
       {
         "number": 4,

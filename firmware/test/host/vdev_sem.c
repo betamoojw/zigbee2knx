@@ -1,4 +1,7 @@
-// Behaviour checks against the real vdev.c: what the device server answers (host harness)
+// Behaviour checks against the real vdev.c and gw.c: what the device server and the gateway's own device answer
+// (host harness)
+#define WITH_GW
+#define WITH_CONSOLE
 #define main cases_main
 #include "vdev_cases.c"
 #undef main
@@ -31,11 +34,68 @@ static void load4(int d, const uint8_t *s, int n)   // a whole download of objec
     set_app(d, 0xC001);
     prop_write5(d, 4, DONE);
 }
-static void reboot_clean(void)   // saved as timers() would, RAM gone, back as vdev_start() brings it
+static void gw_load(const uint8_t *p, int n)   // a download of the gateway's application with these parameters
 {
-    for (int i = 0; i < VDEV_MAX; i++) if (s_d[i].used) save(&s_d[i]);
+    prop_write5(GW, 4, UNLOAD);
+    prop_write5(GW, 4, START);
+    alloc_obj(GW, 4, (uint32_t)n, 1, 0);
+    mem_write(GW, SEG_BASE + 3 * SEG_SIZE, p, n);
+    set_app(GW, 0xC000);
+    prop_write5(GW, 4, DONE);
+}
+static void restart_of(uint16_t ia)   // connectionless A_Restart, as ETS sends it at the end of a download
+{
+    static const uint8_t RS[2] = {0x03, 0x80};
+    feed(PARTNER[0], ia, false, false, RS, 2);
+}
+static void server_start(void)   // vdev_start() once more, as after a power cycle; what the last one made goes first
+{
+    if (s_q) { free(s_q->buf); free(s_q); }
+    if (s_kq) { free(s_kq->buf); free(s_kq); }
+    free(s_mx);
+    g_task_runs = false;   // until vdev_start() creates it again
+    vdev_start();
+}
+// the gateway's tables: 12 objects; with links, object 3 on 31/6/13, 11 on 31/6/17 and 12 on 31/6/18
+static void gw_tables(bool linked)
+{
+    uint8_t go[2 + 2 * 12] = {0, 12};
+    for (int k = 1; k <= 12; k++) {
+        go[2 * k] = 0x4F;   // communication, read, transmit, low priority
+        go[2 * k + 1] = k == 11 ? 14 : k == 3 ? 7 : 0;   // 14 octets, 1 octet, 1 bit
+    }
+    static const uint8_t AT[8] = {0, 3, 0xF6, 0x0D, 0xF6, 0x11, 0xF6, 0x12},
+                         AS[14] = {0, 3, 0, 1, 0, 3, 0, 2, 0, 11, 0, 3, 0, 12}, NONE[2] = {0, 0};
+    for (int o = 3; o >= 1; o--) prop_write5(GW, o, UNLOAD);
+    prop_write5(GW, 3, START); alloc_obj(GW, 3, sizeof go, 1, 0); mem_write(GW, 0x4800, go, sizeof go);
+    prop_write5(GW, 1, START); alloc_obj(GW, 1, linked ? 8 : 2, 1, 0); mem_write(GW, 0x4000, linked ? AT : NONE, linked ? 8 : 2);
+    prop_write5(GW, 2, START); alloc_obj(GW, 2, linked ? 14 : 2, 1, 0); mem_write(GW, 0x4400, linked ? AS : NONE, linked ? 14 : 2);
+    for (int o = 3; o >= 1; o--) prop_write5(GW, o, DONE);
+}
+static bool gw_sent(uint16_t ga, const char *hexs)   // one of the frames since g_last_tx_n was cleared
+{
+    char h[2 * KNX_TPDU_MAX + 1];
+    for (int i = 0; i < g_last_tx_n; i++) {
+        for (int k = 0; k < g_last_tx[i].len; k++) sprintf(h + 2 * k, "%02x", g_last_tx[i].tpdu[k]);
+        if (g_last_tx[i].group && g_last_tx[i].dst == ga && strcmp(h, hexs) == 0) return true;
+    }
+    return false;
+}
+static const char *note_hex(const char *txt)   // GroupValue_Write of a DPT 16.001 text
+{
+    static char h[40];
+    uint8_t v[14] = {0};
+    memcpy(v, txt, strlen(txt));
+    sprintf(h, "0080");
+    for (int i = 0; i < 14; i++) sprintf(h + 4 + 2 * i, "%02x", v[i]);
+    return h;
+}
+static void reboot_clean(void)   // saved as timers() would, RAM gone, the records back as vdev_start() reads them
+{
+    for (int i = 0; i < NDEV; i++) if (s_d[i].used) save(&s_d[i]);
     wipe_ram();
     for (int i = 0; i < VDEV_MAX; i++) restore(i);
+    if (!restore(GW)) init_dev(&s_d[GW]);
     ts_sweep();
     publish();
 }
@@ -44,6 +104,25 @@ static int nvs_tparts(void)
     int n = 0;
     for (int k = 0; k < NKEY; k++) n += g_nvs[k].b && g_nvs[k].key[0] == 't';
     return n;
+}
+// a parameter segment with a template part of about 3.3 KB (text v), as a product with a large template brings it
+static int big_seg(int v, uint8_t *out)
+{
+    static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    int p = 10, l = 3300;
+    for (int i = 0; i < p; i++) out[i] = (uint8_t)(i + v);
+    for (int i = 0; i < l; i++) out[p + i] = (uint8_t)B64[(i * (v + 5) + v) % 64];
+    char tr[17];
+    snprintf(tr, sizeof tr, "KGTE%04X%04X%04X", (unsigned)p, (unsigned)l, (unsigned)p);
+    memcpy(out + p + l, tr, 16);
+    return p + l + 16;
+}
+static bool nvs_has_part(const uint8_t *seg, int n)   // the blob of this segment's template part is in the flash
+{
+    uint32_t at = tpl_split(seg, (uint32_t)n);
+    char k[16];
+    ts_key(crc32_of(seg + at, (uint32_t)n - at), (uint32_t)n - at, k);
+    return at && nvs_find(k) >= 0;
 }
 static void pread(int d, int obj, int pid, int count, int start)
 {
@@ -405,6 +484,600 @@ int main(void)
         ck(vdev_replace(a, 0x5678, NEWIEEE) && s_d[a].zaddr == 0x5678 && !s_d[a].gone && g_zlink_del >= del0 + 1,
            "replace: the class forgets the device that left, the new one is linked");
     }
+    // a template part leaves the flash as soon as no stored record names it (before, it stayed until the next start),
+    // and a blob that does not fit is not written at all
+    fresh();
+    {
+        static uint8_t X[3400], Y[3400], Z[3400], back[3400];
+        int nx = big_seg(1, X), ny = big_seg(2, Y), nz = big_seg(3, Z);
+        int a = vdev_add(0xFFFF, 1, 0, NULL), b = vdev_add(0xFFFF, 1, 0, NULL);
+        vdev_set_ia(a, 0xFF01);
+        vdev_set_ia(b, 0xFF02);
+        load4(a, X, nx);
+        save(&s_d[a]);
+        save(&s_d[b]);
+        ck(nvs_tparts() == 1 && nvs_has_part(X, nx), "device a with template X: its part in the flash");
+        load4(a, Y, ny);
+        save(&s_d[a]);
+        ck(nvs_tparts() == 1 && nvs_has_part(Y, ny) && !nvs_has_part(X, nx),
+           "a changes to Y: X's part goes when a's record names Y, not at the next start");
+        load4(b, Y, ny);
+        save(&s_d[b]);
+        load4(a, Z, nz);
+        save(&s_d[a]);
+        ck(nvs_tparts() == 2 && nvs_has_part(Y, ny) && nvs_has_part(Z, nz), "a changes to Z: Y stays, b's record names it");
+        vdev_del(b);
+        ck(nvs_tparts() == 1 && !nvs_has_part(Y, ny), "b deleted: Y's part goes with b's record");
+        reboot_clean();
+        seg_read(&s_d[a].lo[4], 0, back, (uint32_t)nz);
+        ck(s_d[a].lo[4].state == LS_LOADED && memcmp(back, Z, (size_t)nz) == 0, "after a restart a comes back with Z");
+        // a partition with room for one part more than it holds, not two (the TULX32's actor_db with 32 devices)
+        g_nvs_cap = nvs_used() + 126 + 150;
+        bool all = true;
+        for (int r = 0; r < 6; r++) {
+            const uint8_t *s = r % 3 == 0 ? X : r % 3 == 1 ? Y : Z;
+            load4(a, s, nx);
+            save(&s_d[a]);
+            all = all && !s_d[a].dirty && nvs_tparts() == 1;
+        }
+        ck(all, "six template changes in a row on a nearly full partition: every one saved");
+        // no room even for one part: NVS is not asked to write what it cannot take
+        g_nvs_cap = nvs_used() + 126 + 20;
+        unsigned long ns0 = g_nvs_nospace, er0 = s_save_errs;
+        load4(a, Y, ny);
+        save(&s_d[a]);
+        ck(s_d[a].dirty && s_save_errs == er0 + 1 && g_nvs_nospace == ns0,
+           "no room for the new part: the save fails before NVS writes anything");
+        g_nvs_cap = nvs_used() + 126;   // every usable entry taken
+        ck(vdev_store_pct() == 100, "storage in use: 100 % when nothing is left (the page NVS keeps does not count)");
+        g_nvs_cap = 0;
+    }
+    // a write the storage refuses is told on the gateway's message object, the fault stays on while the record waits,
+    // and it is tried again less and less often
+    fresh();
+    {
+        int d = vdev_add(0xFFFF, 1, 0, NULL);
+        vdev_set_ia(d, 0xFF01);
+        tick_for(3000000);
+        unsigned long n0 = g_note_n[GW_NOTE_STORE], sets0 = g_nvs_sets;
+        ck(!s_d[d].dirty && !vdev_store_failing() && fault_now(vdev_free_slots()) == 0, "saved, no fault");
+        g_nvs_fail = 1;
+        vdev_set_ia(d, 0xFF03);
+        tick_for(3000000);
+        ck(s_d[d].dirty && g_note_n[GW_NOTE_STORE] == n0 + 1 && g_note_ia == 0xFF03 && vdev_store_failing() &&
+           fault_now(vdev_free_slots()) == 1, "the write fails: a message with the device's address, the gateway's fault on");
+        tick_for(3600 * 1000000LL);
+        unsigned long tries = g_nvs_sets - sets0;
+        ck(tries <= 12 && g_note_n[GW_NOTE_STORE] == n0 + 1,
+           "an hour of a refusing storage: at most 12 attempts (360 before), and one message for the series");
+        g_nvs_fail = 0;
+        tick_for(700 * 1000000LL);
+        ck(!s_d[d].dirty && !vdev_store_failing() && fault_now(vdev_free_slots()) == 0,
+           "the storage takes it again: saved at the next attempt, the fault goes");
+        // at the start: a partition NVS cannot use is erased with a log line and a message; none at all is a fault
+        fresh();
+        unsigned long e0 = g_log['E'];
+        int er0 = g_nvs_erased;
+        n0 = g_note_n[GW_NOTE_STORE];
+        g_nvs_init_err = ESP_ERR_NVS_NO_FREE_PAGES;
+        server_start();
+        ck(g_nvs_erased == er0 + 1 && g_log['E'] > e0 && g_note_n[GW_NOTE_STORE] == n0 + 1 && g_note_ia == 0xFFFF &&
+           s_nvs_ok && !vdev_store_failing(), "partition erased at the start: a log line and a message, then it works");
+        g_nvs_open_err = ESP_FAIL;
+        server_start();
+        ck(!s_nvs_ok && vdev_store_failing() && fault_now(vdev_free_slots()) == 1 && g_note_n[GW_NOTE_STORE] == n0 + 2,
+           "no storage at all: a message, and the gateway's fault stays on");
+        fresh();
+        server_start();
+    }
+    // the gateway's own objects: fault and message reach the bus after the start and after every restart of its device
+    // (also when they came while the objects had no group address), every message goes out, and nothing on the way
+    // into its objects is lost
+    fresh();
+    {
+        init_dev(&s_d[GW]);
+        s_d[GW].ia = 0xFF30;
+        publish();
+        static const uint8_t P[5] = {1, 1, 47, 180, 0};
+        gw_tables(false);
+        gw_load(P, 5);
+        restart_of(0xFF30);
+        g_zl_unavailable = 1;   // a Zigbee device that does not answer: fault 1
+        gw_note(GW_NOTE_FAULT, 0xFF05, KNX_ERR_SOFTWARE, "a template that did not come up at the start");
+        g_last_tx_n = 0;
+        status_round(true);
+        ck(g_last_tx_n == 0 && s_d[GW].ko[12].have && s_d[GW].ko[12].v[0] == 1,
+           "first round, objects without group addresses: fault 1 is only in the object");
+        gw_tables(true);        // ETS links objects 3, 11 and 12 ...
+        restart_of(0xFF30);     // ... and restarts the gateway
+        g_last_tx_n = 0;
+        status_round(false);
+        ck(gw_sent(0xF612, "0081") && gw_sent(0xF611, note_hex("15.15.5 SW")),
+           "after the gateway's restart: fault 1 and the last message go out");
+        g_last_tx_n = 0;
+        status_round(false);
+        ck(g_last_tx_n == 0, "the round after: nothing new, nothing sent");
+        gw_note(GW_NOTE_OFFLINE, 0xFF02, 0, "x");
+        gw_note(GW_NOTE_OFFLINE, 0xFF03, 0, "x");
+        gw_note(GW_NOTE_OFFLINE, 0xFF03, 0, "x");
+        g_last_tx_n = 0;
+        status_round(false);
+        bool order = g_last_tx_n == 3;
+        for (int i = 0; i < 3 && order; i++) {
+            const char *want = i ? "15.15.3 OFF" : "15.15.2 OFF";
+            order = g_last_tx[i].dst == 0xF611 && memcmp(g_last_tx[i].tpdu + 2, want, strlen(want)) == 0;
+        }
+        ck(order, "three messages in one round, the last two alike: three telegrams, in order");
+        // a start with the fault present: its first round sends fault and message (the objects have their addresses)
+        s_told_n = s_tell_n - 1;
+        s_fault_n = -1;
+        g_last_tx_n = 0;
+        status_round(true);
+        ck(gw_sent(0xF612, "0081") && gw_sent(0xF611, note_hex("15.15.3 OFF")) && !gw_sent(0xF60D, "0080"),
+           "first round after a start: fault and last message go out, the other status objects are only kept");
+        // the device server's frame queue is full: what the gateway puts still reaches its objects
+        ev_t junk = {.type = EV_FRAME};
+        while (xQueueSend(s_q, &junk, 0) == pdTRUE) {}
+        g_zl_unavailable = 0;
+        g_last_tx_n = 0;
+        status_round(false);
+        ck(s_d[GW].ko[12].v[0] == 0 && gw_sent(0xF612, "0080"), "fault 0 with a full queue: in the object and on the bus");
+        while (xQueueReceive(s_q, &junk, 0) == pdTRUE) {}
+        char longwhy[121];
+        memset(longwhy, 'x', 120);
+        longwhy[120] = 0;
+        gw_note(GW_NOTE_REFUSED, 0xFF05, KNX_ERR_CONFIG, longwhy);
+        ck(strlen(s_note.why) == 120, "a reason of 120 characters is kept whole for the console");
+        status_round(false);
+    }
+    // the device server's queues. A central command to 32 lamps: each answers with two status values while the device
+    // server is still busy with the command (on the stick 8-9 ms per device, the lamp's status about 100 ms after its
+    // command). And a start with 32 devices whose classes send their first values while the next device comes back.
+    fresh();
+    {
+        for (int i = 0; i < VDEV_MAX; i++) {
+            int n = vdev_add((uint16_t)(0x1000 + i), 1, 0, NULL);   // runs built-in class 0
+            vdev_set_ia(n, (uint16_t)(0xFF01 + n));
+            load_light(n);
+        }
+        unsigned long l0 = s_ev_lost + s_kv_lost, kw0 = g_tx_n;
+        s_q_peak = s_kq_peak = 0;
+        g_kw_values = 2;
+        uint8_t wr[2] = {0x00, 0x80};
+        feed(0x1105, 0xF601, true, false, wr, 2);   // central off on 31/6/1, which every lamp has on its KO 1
+        g_kw_values = 0;
+        ck(s_ev_lost + s_kv_lost == l0 && s_kq_peak == 64,
+           "central command to 32 lamps, two status values each meanwhile: 64 waited, none lost");
+        (void)kw0;
+        for (int i = 0; i < VDEV_MAX; i++) save(&s_d[i]);
+        wipe_ram();
+        g_set_values = 3;
+        s_kq_peak = 0;
+        l0 = s_ev_lost + s_kv_lost;
+        server_start();
+        g_set_values = 0;
+        ck(s_ev_lost + s_kv_lost == l0 && s_kq_peak <= 3 && s_d[VDEV_MAX - 1].k == 0,
+           "start of 32 devices with three first values each: taken device by device, none lost");
+    }
+    // a restart does not check a template again whose VM runs (a partial download of the tables included); a check
+    // that finds no memory is tried again instead of leaving the device without its class until the next restart
+    fresh();
+    {
+        uint8_t s0[TPL_SEG_MAX], s1[TPL_SEG_MAX];
+        int n0 = tpl_seg(0, s0), n1 = tpl_seg(1, s1);
+        int a = vdev_add(0x1234, 1, 0, NULL);
+        vdev_set_ia(a, 0xFF01);
+        g_tpl_mode = 1;
+        load4(a, s0, n0);
+        restart_of(0xFF01);
+        unsigned long c0 = g_tpl_calls;
+        ck(s_d[a].k == 2 && !s_d[a].fault, "template loaded and running");
+        restart_of(0xFF01);
+        load_light(a);              // a partial download: the tables anew, object 4 unloaded and loaded again ...
+        prop_write5(a, 4, START);
+        alloc_obj(a, 4, (uint32_t)n0, 0, 0);   // ... without fill: it keeps its content
+        prop_write5(a, 4, DONE);
+        restart_of(0xFF01);
+        ck(g_tpl_calls == c0 && s_d[a].k == 2, "two restarts, one after a partial download of the tables: not checked again");
+        int b = vdev_add(0x2345, 1, 0, NULL);
+        vdev_set_ia(b, 0xFF02);
+        load4(b, s0, n0);
+        restart_of(0xFF02);
+        ck(g_tpl_calls == c0 && s_d[b].k == 2, "a second device with the same template, checked at LoadCompleted: not checked again");
+        g_tpl_mode = 3;   // no memory for the check of the next template
+        load4(a, s1, n1);
+        restart_of(0xFF01);
+        ck(s_d[a].fault == KNX_ERR_NO_RAM && s_d[a].k == -1, "a new template and no memory to check it: no class, Error 7");
+        unsigned long f0 = g_note_n[GW_NOTE_FAULT];
+        tick_for(31000000);
+        ck(s_d[a].fault == KNX_ERR_NO_RAM && g_note_n[GW_NOTE_FAULT] == f0, "tried again after 30 s, still no memory: no new message");
+        g_tpl_mode = 1;
+        tick_for(31000000);
+        ck(!s_d[a].fault && s_d[a].k == 2, "memory there again: the next attempt brings the device up");
+        g_tpl_mode = 0;
+    }
+    // a device without a running class answers no read with what the class said before, nor does an object under
+    // another application; unloading the application stops the class when the connection ends
+    fresh();
+    {
+        static const uint8_t SEG[12] = {1, 1, 100, 99, 1, 1, 100, 0, 0, 60, 0, 0};
+        uint8_t one = 1, rd[2] = {0, 0};
+        int a = vdev_add(0x1234, 1, 0, NULL);
+        vdev_set_ia(a, 0xFF01);
+        load_light(a);
+        load4(a, SEG, sizeof SEG);
+        restart_of(0xFF01);
+        vdev_ko_out(100 + a, 4, &one, 1, false, true); pump();
+        feed(0x1105, 0xF604, true, false, rd, 2);
+        ck(s_d[a].k == 0 && g_last_tx_n == 1 && g_last_tx[0].tpdu[1] == 0x41, "class runs: a read of the status gets 1");
+        g_tpl_mode = 2;
+        restart_of(0xFF01);   // its template does not come up now: no class
+        g_tpl_mode = 0;
+        feed(0x1105, 0xF604, true, false, rd, 2);
+        ck(s_d[a].k == -1 && g_last_tx_n == 0, "no class runs: the read gets no answer (it got the old 1 before)");
+        restart_of(0xFF01);
+        vdev_ko_out(100 + a, 4, &one, 1, false, true); pump();
+        set_app(a, 0xC001);   // ETS writes the same application again
+        feed(0x1105, 0xF604, true, false, rd, 2);
+        ck(g_last_tx_n == 1, "the same application written again: the value stays");
+        set_app(a, 0xC002);   // another one
+        feed(0x1105, 0xF604, true, false, rd, 2);
+        ck(g_last_tx_n == 0, "another application: what the object held under the old one is not answered");
+        load4(a, SEG, sizeof SEG);
+        restart_of(0xFF01);
+        ck(s_d[a].k == 0, "C001 again: the class runs");
+        conn(A, 0xFF01, 0x80);
+        prop_write5(a, 4, UNLOAD);
+        ck(s_d[a].k == 0, "application unloaded, the connection still open: the class still runs");
+        conn(A, 0xFF01, 0x81);
+        ck(s_d[a].k == -1, "the connection ends with the application unloaded: the class stops (it ran on before)");
+        conn(A, 0xFF01, 0x80);   // a whole download in one connection, ended by its restart
+        load4(a, SEG, sizeof SEG);
+        uint8_t rs[2] = {0x03, 0x80};
+        data(A, 0xFF01, 0, rs, 2);
+        ck(s_d[a].k == 0, "unloaded and loaded again in one connection, then the restart: the class runs");
+        prop_write5(a, 4, UNLOAD);
+        restart_of(0xFF01);
+        ck(s_d[a].k == -1, "unloaded without a connection, then a restart: the class stops");
+    }
+    // A_Restart: a master reset is answered (only the confirmed restart is carried out); responses and reserved bits
+    // are ignored. Answers of device management go with priority low, the transport layer's control with system.
+    fresh();
+    {
+        int a = vdev_add(0xFFFF, 1, 0, NULL);
+        vdev_set_ia(a, 0xFF01);
+        uint8_t mr[4] = {0x03, 0x81, 0x01, 0x00};   // master reset, erase code 01h (confirmed restart), channel 0
+        vdev_prog(a, true);
+        feed(A, 0xFF01, false, false, mr, 4);
+        ck(sent(0, A, "03a1000000") && !s_d[a].prog, "confirmed restart: answered with error code 0, then restarted");
+        mr[2] = 0x02;   // factory reset
+        vdev_prog(a, true);
+        feed(A, 0xFF01, false, false, mr, 4);
+        ck(sent(0, A, "03a1020000") && s_d[a].prog, "factory reset: unsupported erase code, nothing restarted");
+        mr[2] = 0x01;
+        mr[3] = 0x01;
+        feed(A, 0xFF01, false, false, mr, 4);
+        ck(sent(0, A, "03a1030000") && s_d[a].prog, "confirmed restart for channel 1: invalid channel number");
+        uint8_t rsv[2] = {0x03, 0x82}, rsp[5] = {0x03, 0xA1, 0x00, 0x00, 0x00};
+        feed(A, 0xFF01, false, false, rsv, 2);
+        ck(g_last_tx_n == 0 && s_d[a].prog, "a reserved bit set: ignored");
+        feed(A, 0xFF01, false, false, rsp, 5);
+        ck(g_last_tx_n == 0 && s_d[a].prog, "an A_Restart_Response from elsewhere: no restart (it restarted before)");
+        static const uint8_t DD[2] = {0x03, 0x00};
+        feed(A, 0xFF01, false, false, DD, 2);
+        ck(g_last_tx_n == 1 && g_last_tx[0].prio == 3, "connectionless answer: priority low");
+        conn(A, 0xFF01, 0x80);
+        data(A, 0xFF01, 0, DD, 2);
+        ck(g_last_tx_n == 2 && g_last_tx[0].prio == 0 && g_last_tx[1].prio == 3,
+           "connected: the T_ACK with priority system, the answer with low");
+        conn(A, 0xFF01, 0xC2);
+        conn(A, 0xFF01, 0x81);
+        uint8_t ar[2] = {0x01, 0x00};
+        feed(A, 0, true, false, ar, 2);
+        ck(g_last_tx_n == 1 && g_last_tx[0].prio == 0, "A_IndividualAddress_Response: priority system");
+        vdev_prog(a, false);
+    }
+    // an object in Error gives its RAM back after a minute without a connection; an answer to a read the link had no
+    // room for is sent as soon as there is room (it was dropped)
+    fresh();
+    {
+        int a = vdev_add(0xFFFF, 1, 0, NULL);
+        vdev_set_ia(a, 0xFF01);
+        prop_write5(a, 1, START);
+        alloc_obj(a, 1, 1000, 1, 0x11);
+        alloc_obj(a, 1, 0, 0, 0);   // size 0: Error 8
+        uint32_t held = seg_total();
+        ck(s_d[a].lo[1].state == LS_ERROR && s_d[a].lo[1].cap == 1000, "object 1 in Error, its 1000 B still held");
+        tick_for(61000000);
+        ck(s_d[a].lo[1].state == LS_ERROR && s_d[a].lo[1].cap == 0 && !s_d[a].lo[1].seg && seg_total() == held - 1000,
+           "a minute later, no connection: the 1000 B are back, the state stays Error");
+        pread(a, 1, 27, 1, 1);
+        ck(sent(0, A, "03d6011b10010000000000ffffff"), "PID 27 in Error then: size 0, CRC FFFF");
+        prop_write5(a, 1, UNLOAD);
+        load_light(a);
+        uint8_t one = 1, rd[2] = {0, 0};
+        vdev_ko_out(100 + a, 4, &one, 1, true, true); pump();
+        unsigned long gt = s_d[a].grp_tx;
+        g_txfail_pct = 100;
+        feed(0x1105, 0xF604, true, false, rd, 2);
+        g_txfail_pct = 0;
+        ck(s_d[a].grp_tx == gt, "a read while the link has no room: nothing sent, nothing counted");
+        g_last_tx_n = 0;
+        tick_for(200000);
+        ck(g_last_tx_n == 1 && g_last_tx[0].dst == 0xF604 && g_last_tx[0].tpdu[1] == 0x41 && s_d[a].grp_tx == gt + 1,
+           "room again: the answer goes out (GroupValue_Response 1 on the address of the read)");
+    }
+    // a group telegram the link gave up (no confirmation of the chip) goes out again: a status at most three times,
+    // an answer to a read; not a value the class sent as a command, nor one that changed since
+    fresh();
+    {
+        int a = vdev_add(0xFFFF, 1, 0, NULL);
+        vdev_set_ia(a, 0xFF01);
+        load_light(a);
+        uint8_t one = 1, two = 0;
+        g_last_tx_n = 0;
+        vdev_ko_out(100 + a, 4, &one, 1, false, true); pump();
+        ck(g_last_tx_n == 1 && sent(0, 0xF604, "0081"), "status 1 sent");
+        knx_frame_t f = {.src = 0xFF01, .dst = 0xF604, .group = true, .own = true, .len = 2, .tpdu = {0x00, 0x81}};
+        int again = 0;
+        for (int r = 0; r < 4; r++) {
+            lost(&f); pump();
+            g_last_tx_n = 0;
+            tick_for(200000);
+            again += g_last_tx_n == 1 && sent(0, 0xF604, "0081");
+        }
+        ck(again == 3, "the link gives it up four times: sent again three times, then left");
+        vdev_ko_out(100 + a, 4, &two, 1, false, true); pump();
+        lost(&f); pump();   // the link reports the old 1 lost; the object holds 0 by now
+        g_last_tx_n = 0;
+        tick_for(200000);
+        ck(g_last_tx_n == 0, "a value that changed since: the lost one is not sent again");
+        vdev_ko_out(100 + a, 4, &one, 1, false, false); pump();   // a command: always sent, not repeated
+        lost(&f); pump();
+        g_last_tx_n = 0;
+        tick_for(200000);
+        ck(g_last_tx_n == 0, "a value sent as a command: not repeated");
+        vdev_ko_out(100 + a, 4, &one, 1, false, true); pump();
+        knx_frame_t r = f;
+        r.tpdu[1] = 0x41;   // the answer to a read
+        lost(&r); pump();
+        g_last_tx_n = 0;
+        tick_for(200000);
+        ck(g_last_tx_n == 1 && sent(0, 0xF604, "0041"), "an answer to a read the link gave up: answered again");
+    }
+    // the KNX serial number follows the Zigbee device: 00FA and SHA-256 over its IEEE address; the gateway's over the
+    // base MAC; a device without an IEEE address keeps the earlier number from the slot
+    fresh();
+    {
+        uint8_t h[32];
+        sha256((const uint8_t *)"abc", 3, h);
+        bool fips = h[0] == 0xba && h[1] == 0x78 && h[2] == 0x16 && h[3] == 0xbf && h[31] == 0xad;
+        sha256((const uint8_t *)"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", 56, h);
+        fips = fips && h[0] == 0x24 && h[1] == 0x8d && h[2] == 0x6a && h[3] == 0x61 && h[31] == 0xc1;
+        ck(fips, "the test's SHA-256 gives the FIPS 180-2 results");
+        static const uint8_t IE1[8] = {0x78, 0xc2, 0xec, 0xfe, 0xff, 0xa7, 0xdb, 0x28}, IE2[8] = {1, 2, 3, 4, 5, 6, 7, 8},
+                             MAC[6] = {0x10, 0x20, 0x30, 0x80, 0x2b, 0x7c};
+        int a = vdev_add(0x1111, 1, -1, IE1), b = vdev_add(0x2222, 1, -1, NULL);
+        uint8_t want[6] = {0x00, 0xFA};
+        sha256(IE1, 8, h);
+        memcpy(want + 2, h, 4);
+        ck(memcmp(s_d[a].serial, want, 6) == 0, "device with IEEE address: 00FA and the first 4 octets of its SHA-256");
+        static const uint8_t OLD_B[6] = {0x00, 0xFA, 0x80, 0x2b, 0x7c, 2};
+        ck(b == 1 && memcmp(s_d[b].serial, OLD_B, 6) == 0, "device without IEEE address: base MAC and slot, as before");
+        sha256(MAC, 6, h);
+        memcpy(want + 2, h, 4);
+        init_dev(&s_d[GW]);
+        ck(memcmp(s_d[GW].serial, want, 6) == 0, "the gateway: SHA-256 over its base MAC");
+        uint8_t sa[6];
+        memcpy(sa, s_d[a].serial, 6);
+        vdev_del(a);
+        int c = vdev_add(0x3333, 1, -1, IE2);
+        sha256(IE2, 8, h);
+        memcpy(want + 2, h, 4);
+        ck(c == a && memcmp(s_d[c].serial, want, 6) == 0 && memcmp(s_d[c].serial, sa, 6) != 0,
+           "another Zigbee device in the freed slot: another serial number (it got the same one before)");
+        vdev_seen(0x2222, IE1);   // b learns its IEEE address
+        sha256(IE1, 8, h);
+        memcpy(want + 2, h, 4);
+        ck(memcmp(s_d[b].serial, want, 6) == 0, "the IEEE address learned later: the number follows it");
+        memcpy(sa, s_d[c].serial, 6);
+        reboot_clean();
+        ck(memcmp(s_d[c].serial, sa, 6) == 0 && memcmp(s_d[b].serial, want, 6) == 0, "after a restart: the same numbers");
+        uint8_t sr[8] = {0x03, 0xDC};
+        memcpy(sr + 2, s_d[c].serial, 6);
+        feed(A, 0, true, false, sr, 8);
+        ck(g_last_tx_n == 1 && memcmp(g_last_tx[0].tpdu + 2, s_d[c].serial, 6) == 0, "A_SerialNumber_Read finds it");
+    }
+    // two of our devices never get the same individual address
+    fresh();
+    {
+        int a = vdev_add(0xFFFF, 1, 0, NULL), b = vdev_add(0xFFFF, 1, 0, NULL), c = vdev_add(0xFFFF, 1, 0, NULL);
+        vdev_set_ia(c, 0xFF07);
+        unsigned long n0 = g_note_n[GW_NOTE_DUP];
+        vdev_prog(a, true);
+        vdev_prog(b, true);
+        uint8_t wr[4] = {0x00, 0xC0, 0xFF, 0x06};
+        feed(A, 0, true, false, wr, 4);
+        ck((s_d[a].ia == 0xFF06) != (s_d[b].ia == 0xFF06) && g_note_n[GW_NOTE_DUP] == n0 + 1 && g_note_ia == 0xFF06,
+           "two devices in programming mode, one address written: one takes it, the other is refused and told");
+        int other = s_d[a].ia == 0xFF06 ? b : a;
+        vdev_prog(a, false);
+        vdev_prog(b, false);
+        vdev_prog(other, true);
+        wr[3] = 0x07;
+        feed(A, 0, true, false, wr, 4);
+        ck(s_d[other].ia == 0xFFFF && s_d[c].ia == 0xFF07, "an address another device has: not taken");
+        uint8_t sw[14] = {0x03, 0xDE};
+        memcpy(sw + 2, s_d[other].serial, 6);
+        sw[8] = 0xFF;
+        sw[9] = 0x07;
+        feed(A, 0, true, false, sw, 14);
+        ck(s_d[other].ia == 0xFFFF, "by serial number: not taken either");
+        ck(!vdev_set_ia(other, 0xFF07) && s_d[other].ia == 0xFFFF, "nor by hand at the console");
+        init_dev(&s_d[GW]);
+        s_d[GW].ia = 0xFF30;
+        ck(!vdev_set_ia(other, 0xFF30), "the gateway's address counts as well");
+        ck(vdev_set_ia(c, 0xFFFF) && s_d[other].ia == 0xFFFF, "15.15.255 is no address: two may have it");
+        vdev_prog(other, false);
+        s_d[a].ia = s_d[b].ia = 0xFF20;   // records of earlier firmware
+        for (int i = 0; i < VDEV_MAX; i++) if (s_d[i].used) save(&s_d[i]);
+        wipe_ram();
+        n0 = g_note_n[GW_NOTE_DUP];
+        server_start();
+        ck(g_note_n[GW_NOTE_DUP] == n0 + 1 && g_note_ia == 0xFF20, "two records with one address at the start: told");
+    }
+    // a device that comes back at a new short address is linked there with the parameters of its download (a built-in
+    // class got its defaults); one that left stays marked so when it is linked (at the start); whether its receiver
+    // is on is there to ask (vdev_rx_on)
+    fresh();
+    {
+        static const uint8_t P10[10] = {1, 1, 100, 99, 1, 1, 100, 0, 0, 60};
+        static const uint8_t IE[8] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+        int z = vdev_add(0x1234, 1, -1, IE);
+        vdev_set_ia(z, 0xFF05);
+        load4(z, P10, 10);
+        restart_of(0xFF05);
+        int p0 = g_params_n, s0 = g_zset_n;
+        vdev_seen(0x4321, IE);
+        ck(s_d[z].k == 0 && s_d[z].zaddr == 0x4321 && g_zset_n == s0 + 1 && g_params_n == p0 + 1 &&
+           strstr(g_last_params, "\"p\":\"0101646301016400003c\"") != NULL,
+           "back at another short address: linked there, with the parameters of the download again");
+        int h = vdev_add(0x2000, 1, 1, NULL);   // a class given by hand, nothing downloaded
+        s0 = g_zset_n;
+        p0 = g_params_n;
+        uint8_t ieh[8] = {9, 8, 7, 6, 5, 4, 3, 2};
+        vdev_seen(0x2000, ieh);   // learns its IEEE address
+        vdev_seen(0x2001, ieh);   // and moves
+        ck(s_d[h].zaddr == 0x2001 && g_zset_n == s0 + 1 && g_params_n == p0 && s_d[h].k == 1,
+           "a class given by hand follows its device with its own defaults, as before");
+        ck(vdev_rx_on(z) == -1, "vdev_rx_on: not known before an announce");
+        vdev_set_capability(IE, 0x8e);
+        ck(vdev_rx_on(z) == 1, "vdev_rx_on: receiver on");
+        vdev_set_capability(IE, 0x80);
+        ck(vdev_rx_on(z) == 0, "vdev_rx_on: a sleepy end device");
+        ck(vdev_rx_on(-1) == -1 && vdev_rx_on(VDEV_MAX - 1) == -1 && vdev_rx_on(VDEV_GW) == -1,
+           "vdev_rx_on: no such device, or the gateway: not known");
+        vdev_gone(z);   // its Zigbee device leaves the network
+        reboot_clean();
+        ck(vdev_rx_on(z) == 0, "vdev_rx_on after a restart: from the record");
+        for (int i = 0; i < VDEV_MAX; i++) if (s_d[i].used) save(&s_d[i]);
+        wipe_ram();
+        g_gone_n = 0;
+        server_start();
+        ck(s_d[z].gone && s_d[z].k == 0 && g_gone_n == 1 && g_gone_inst == 100 + z && g_gone_val == 1,
+           "a device whose Zigbee device had left: linked at the start and told the link it is gone");
+        g_gone_n = 0;
+        restart_of(0xFF05);
+        ck(g_gone_n == 1 && g_gone_val == 1, "... also when it is linked again at a restart");
+    }
+    // a GroupValue_Response reaches an object with the update flag as a write does, and only such an object; more
+    // group addresses than the link acknowledges are told on the gateway's message object
+    fresh();
+    {
+        int a = vdev_add(0x1234, 1, 0, NULL);
+        vdev_set_ia(a, 0xFF01);
+        // KO 1 on 31/6/1 with the write flag, KO 2 on 31/6/2 with write and update flag
+        static const uint8_t AT[6] = {0, 2, 0xF6, 0x01, 0xF6, 0x02}, AS[10] = {0, 2, 0, 1, 0, 1, 0, 2, 0, 2},
+                             GO[6] = {0, 2, 0x17, 0x00, 0x97, 0x00};
+        for (int o = 3; o >= 1; o--) prop_write5(a, o, UNLOAD);
+        prop_write5(a, 3, START); alloc_obj(a, 3, sizeof GO, 1, 0); mem_write(a, 0x4800, GO, sizeof GO);
+        prop_write5(a, 1, START); alloc_obj(a, 1, sizeof AT, 1, 0); mem_write(a, 0x4000, AT, sizeof AT);
+        prop_write5(a, 2, START); alloc_obj(a, 2, sizeof AS, 1, 0); mem_write(a, 0x4400, AS, sizeof AS);
+        for (int o = 3; o >= 1; o--) prop_write5(a, o, DONE);
+        int n0 = g_kw_n;
+        uint8_t rsp[2] = {0x00, 0x41};
+        feed(0x1105, 0xF601, true, false, rsp, 2);
+        ck(g_kw_n == n0, "a response to an object without the update flag: not taken");
+        feed(0x1105, 0xF602, true, false, rsp, 2);
+        ck(g_kw_n == n0 + 1 && g_kw_ko == 2, "a response to an object with the update flag: taken as a write");
+        unsigned long g0 = g_note_n[GW_NOTE_GROUPS];
+        for (int i = 0; i < 2; i++) {
+            int d = vdev_add(0xFFFF, 1, 0, NULL);
+            vdev_set_ia(d, (uint16_t)(0xFF02 + i));
+            uint8_t tab[2 + 2 * 200];
+            tab[0] = 0; tab[1] = 200;
+            for (int k = 0; k < 200; k++) {
+                uint16_t g = (uint16_t)(0x0800 + 256 * i + k);
+                tab[2 + 2 * k] = (uint8_t)(g >> 8);
+                tab[3 + 2 * k] = (uint8_t)g;
+            }
+            prop_write5(d, 1, START); alloc_obj(d, 1, sizeof tab, 1, 0);
+            mem_write(d, 0x4000, tab, sizeof tab);
+            prop_write5(d, 1, DONE);
+        }
+        ck(g_ack_nga == KNX_ACK_GA_MAX && g_note_n[GW_NOTE_GROUPS] == g0 + 1 && g_note_ia == 0xFF03,
+           "402 group addresses, 256 acknowledged: told once, with the device whose addresses did not fit");
+        vdev_prog(a, true);
+        vdev_prog(a, false);
+        ck(g_note_n[GW_NOTE_GROUPS] == g0 + 1, "published again without more: not told again");
+    }
+    // the console: a number that is no number is refused, not taken as 0; vdev and dump print nothing while the
+    // device server's lock is held
+    fresh();
+    {
+        int a = vdev_add(0x1234, 1, 0, NULL), b = vdev_add(0x2345, 1, 0, NULL);
+        vdev_set_ia(a, 0xFF01);
+        vdev_set_ia(b, 0xFF02);
+        load_light(a);
+        char *del[] = {"vdev", "del", "x", "yes"}, *ia[] = {"ia", "1x", "15.15.9"}, *re[] = {"reint", "x"},
+             *ap[] = {"apdu", "55x"}, *pg[] = {"prog", "x", "on"}, *dm[] = {"dump", "0", "4x"};
+        unsigned long l0 = g_leave_n, r0 = g_reint_n;
+        ck(c_vdev(4, del) == 1 && s_d[0].used && g_leave_n == l0, "vdev del x yes: refused, device 0 stays (it was removed)");
+        ck(c_ia(3, ia) == 1 && s_d[1].ia == 0xFF02, "ia 1x 15.15.9: refused");
+        ck(c_reint(2, re) == 1 && g_reint_n == r0, "reint x: refused (it re-interviewed device 0)");
+        ck(c_apdu(2, ap) == 1 && vdev_max_apdu(0) == 15, "apdu 55x: refused (atoi made 55 of it)");
+        ck(c_prog(3, pg) == 1 && !s_d[0].prog, "prog x on: refused (device 0 went into programming mode)");
+        ck(c_dump(3, dm) == 1, "dump 0 4x: refused");
+        char *del0[] = {"vdev", "del", "1", "yes"};
+        ck(c_vdev(4, del0) == 0 && !s_d[1].used && g_leave_n == l0 + 1, "vdev del 1 yes: removed, its Zigbee device asked to leave");
+        g_print_locked = 0;
+        vdev_print();
+        vdev_dump(0, 2);
+        gw_print();
+        ck(g_print_locked == 0, "vdev, dump and gw print nothing while the device server's lock is held");
+    }
+    // what the class's values do after a start, when the device server holds nothing yet: given as initial they are
+    // only kept (answered on a read); given as a status without initial they go out. zlink.c sends the first
+    // "reachable" after a start that way and so tells the bus that a device which had been off is back.
+    fresh();
+    {
+        int a = vdev_add(0x1234, 1, 0, NULL);
+        vdev_set_ia(a, 0xFF01);
+        load_light(a);
+        reboot_clean();
+        uint8_t one = 1, rd[2] = {0, 0};
+        g_last_tx_n = 0;
+        vdev_ko_out(100 + a, 4, &one, 1, true, true); pump();
+        ck(g_last_tx_n == 0 && s_d[a].ko[4].have, "after a start, initial 1: kept, not sent");
+        feed(0x1105, 0xF604, true, false, rd, 2);
+        ck(g_last_tx_n == 1 && g_last_tx[0].tpdu[1] == 0x41, "... and answered on a read");
+        reboot_clean();
+        g_last_tx_n = 0;
+        vdev_ko_out(100 + a, 4, &one, 1, false, true); pump();
+        ck(g_last_tx_n == 1 && sent(0, 0xF604, "0081"), "after a start, a status 1 without initial: on the bus");
+        g_last_tx_n = 0;
+        vdev_ko_out(100 + a, 4, &one, 1, false, true); pump();
+        ck(g_last_tx_n == 0, "the same status again: not sent twice");
+    }
+    // a template that does not come up at the start: the device runs nothing, as at run time (it ran the built-in class
+    // of its application number before); a device set up by hand and never loaded still runs the class it was given
+    fresh();
+    {
+        static const uint8_t SEG[12] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+        int a = vdev_add(0x1234, 1, 0, NULL), b = vdev_add(0x2345, 1, 1, NULL);
+        vdev_set_ia(a, 0xFF01);
+        vdev_set_ia(b, 0xFF02);
+        load4(a, SEG, sizeof SEG);
+        g_tpl_mode = 2;   // refused when it is brought up
+        restart_of(0xFF01);
+        ck(s_d[a].fault && s_d[a].k == -1, "at run time: refused, the device runs no class");
+        for (int i = 0; i < VDEV_MAX; i++) if (s_d[i].used) save(&s_d[i]);
+        wipe_ram();
+        server_start();
+        ck(s_d[a].fault == KNX_ERR_CONFIG && s_d[a].k == -1, "after a start: the same, no built-in class instead");
+        ck(s_d[b].k == 1 && !s_d[b].fault, "a device set up by hand, never loaded: runs the class it was given");
+        g_tpl_mode = 0;
+    }
     // a value of 14 octets: DPT 16, the gateway's message object
     fresh();
     d = vdev_add(0xFFFF, 1, 0, NULL);
@@ -607,12 +1280,21 @@ int main(void)
         t[0] = 0x02; t[1] = 0x80 | 40; t[2] = 0x40; t[3] = 0x10;   // A_Memory_Write, 40 octets at 4010h
         for (int i = 0; i < 40; i++) t[4 + i] = (uint8_t)(0xA0 + i);
         feed(A, IA, false, false, t, 44);
-        bool in = true;
-        for (int i = 0; i < 40; i++) in = in && s_d[e].lo[1].seg[0x10 + i] == (uint8_t)(0xA0 + i);
-        snprintf((char *)want, sizeof want, "0268%s", "4010");
-        for (int i = 0; i < 40; i++) sprintf((char *)want + 8 + 2 * i, "%02x", 0xA0 + i);
-        ck(in && g_last_tx_n == 1 && g_last_tx[0].len == 44 && sent(0, A, (char *)want),
-           "memory write of 40 octets (extended frame): written, echo of 44 octets with the data");
+        bool in = false;
+        for (int i = 0; i < 40; i++) in = in || s_d[e].lo[1].seg[0x10 + i] != 0;
+        ck(!in && g_last_tx_n == 1 && sent(0, A, "02404010"),
+           "memory write of 40 octets with PID 56 = 15: not written, verify answers count 0 (03_03_07 p. 113)");
+        {   // number and data octets must agree (08_03_07 2.7.11)
+            uint8_t m[10] = {0x02, 0x84, 0x40, 0x10, 1, 2, 3, 4, 5, 6};
+            feed(A, IA, false, false, m, 10);
+            ck(s_d[e].lo[1].seg[0x10] == 0 && sent(0, A, "02404010"), "number 4 with 6 data octets: not written, count 0");
+            feed(A, IA, false, false, m, 7);
+            ck(s_d[e].lo[1].seg[0x10] == 0 && sent(0, A, "02404010"), "number 4 with 3 data octets: not written, count 0");
+            uint8_t m12[16] = {0x02, 0x8C, 0x40, 0x10, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9};
+            feed(A, IA, false, false, m12, 16);
+            ck(s_d[e].lo[1].seg[0x10] == 9 && s_d[e].lo[1].seg[0x1B] == 9 && g_last_tx_n == 1 && g_last_tx[0].len == 16,
+               "number 12 with PID 56 = 15: written, echo of 16 octets");
+        }
         uint8_t r[4] = {0x02, 40, 0x40, 0x10};   // A_Memory_Read, 40 octets
         feed(A, IA, false, false, r, 4);
         ck(g_last_tx_n == 1 && sent(0, A, "02404010"), "memory read of 40 octets with PID 56 = 15: count 0");
@@ -620,8 +1302,29 @@ int main(void)
            "apdu 66 taken, 67 and 14 refused, 0 reads");
         pread(e, 0, 56, 1, 1);
         ck(g_last_tx_n == 1 && g_last_tx[0].tpdu[7] == 66, "PID 56 reads 66 then");
+        feed(A, IA, false, false, t, 44);
+        in = true;
+        for (int i = 0; i < 40; i++) in = in && s_d[e].lo[1].seg[0x10 + i] == (uint8_t)(0xA0 + i);
+        snprintf((char *)want, sizeof want, "0268%s", "4010");
+        for (int i = 0; i < 40; i++) sprintf((char *)want + 8 + 2 * i, "%02x", 0xA0 + i);
+        ck(in && g_last_tx_n == 1 && g_last_tx[0].len == 44 && sent(0, A, (char *)want),
+           "memory write of 40 octets with PID 56 = 66 (extended frame): written, echo of 44 octets with the data");
         feed(A, IA, false, false, r, 4);
         ck(g_last_tx_n == 1 && g_last_tx[0].len == 44 && sent(0, A, (char *)want), "memory read of 40 octets with PID 56 = 66");
+        {   // a table as an array (PID_TABLE): as many entries as the frame takes, PID 56 - 5 octets of data
+            static const uint8_t AS4[18] = {0, 4, 0, 1, 0, 1, 0, 2, 0, 2, 0, 3, 0, 3, 0, 4, 0, 4};
+            prop_write5(e, 2, START);
+            alloc_obj(e, 2, sizeof AS4, 1, 0);
+            mem_write(e, 0x4400, AS4, sizeof AS4);
+            prop_write5(e, 2, DONE);
+            pread(e, 2, 23, 3, 1);
+            ck(sent(0, A, "03d60217300100010001000200020003" "0003"),
+               "PID 56 = 66: three association entries (12 octets) in one answer");
+            vdev_max_apdu(15);
+            pread(e, 2, 23, 3, 1);
+            ck(sent(0, A, "03d602170001"), "PID 56 = 15: the same three do not fit, count 0");
+            vdev_max_apdu(66);
+        }
         uint8_t r63[4] = {0x02, 63, 0x40, 0x00};
         feed(A, IA, false, false, r63, 4);
         ck(g_last_tx_n == 1 && g_last_tx[0].len == KNX_TPDU_MAX && g_last_tx[0].tpdu[1] == (0x40 | 63),
@@ -639,6 +1342,67 @@ int main(void)
         conn(A, IA, 0xC2);
         conn(A, IA, 0x81);
         ck(vdev_max_apdu(15) == 15, "back to 15");
+    }
+    // the gateway's parameters: LongFrames (octet 4) gives PID 56 of every device from the restart that ends the
+    // gateway's download; parameters the gateway cannot take end that download in Error
+    fresh();
+    {
+        int e = vdev_add(0xFFFF, 1, 0, NULL);
+        vdev_set_ia(e, IA);
+        init_dev(&s_d[GW]);
+        s_d[GW].ia = 0xFF30;
+        publish();
+        static const uint8_t L1[5] = {1, 1, 47, 180, 1}, L2[5] = {1, 1, 47, 180, 2}, L0[5] = {1, 1, 47, 180, 0},
+                             V2[4] = {1, 1, 47, 180};
+        vdev_max_apdu(15);
+        gw_load(L1, 5);
+        pread(e, 0, 56, 1, 1);
+        ck(s_d[GW].lo[4].state == LS_LOADED && sent(0, A, "03d600381001000f"),
+           "LongFrames 1 loaded: PID 56 stays 15 until the gateway restarts");
+        restart_of(0xFF30);
+        pread(e, 0, 56, 1, 1);
+        ck(sent(0, A, "03d6003810010037"), "after the gateway's restart: PID 56 = 55 in every device");
+        pread(GW, 0, 56, 1, 1);
+        ck(sent(0, A, "03d6003810010037"), "... and in the gateway itself");
+        gw_load(L2, 5);
+        restart_of(0xFF30);
+        pread(e, 0, 56, 1, 1);
+        ck(sent(0, A, "03d6003810010042"), "LongFrames 2: PID 56 = 66");
+        gw_load(L0, 5);
+        restart_of(0xFF30);
+        pread(e, 0, 56, 1, 1);
+        ck(sent(0, A, "03d600381001000f"), "LongFrames 0: standard frames, PID 56 = 15");
+        gw_load(L2, 5);
+        restart_of(0xFF30);
+        gw_load(V2, 4);
+        restart_of(0xFF30);
+        pread(e, 0, 56, 1, 1);
+        ck(sent(0, A, "03d600381001000f"), "application version 2 (4 octets, no LongFrames): standard frames");
+        vdev_max_apdu(66);
+        pread(e, 0, 56, 1, 1);
+        ck(sent(0, A, "03d6003810010042"), "the console overrides it ...");
+        restart_of(0xFF30);
+        pread(e, 0, 56, 1, 1);
+        ck(sent(0, A, "03d600381001000f"), "... until the gateway's next restart");
+        gw_load(L1, 5);
+        restart_of(0xFF30);
+        reboot_clean();
+        apply(&s_d[GW]);   // as vdev_start() does with the gateway's record
+        pread(e, 0, 56, 1, 1);
+        ck(sent(0, A, "03d6003810010037"), "after a start: from the gateway's record, 55");
+        static const uint8_t SWAP[5] = {1, 47, 1, 180, 1}, TOP[5] = {1, 1, 255, 180, 1}, BAD[5] = {1, 1, 47, 180, 3};
+        int f0 = vdev_faulty();
+        gw_load(SWAP, 5);
+        ck(s_d[GW].lo[4].state == LS_ERROR && s_d[GW].lo[4].err == KNX_ERR_CONFIG && sent(0, A, "03d60405100103"),
+           "first device number above the last: the gateway's download ends in Error 3");
+        ck(vdev_faulty() == f0 + 1, "the gateway's own application in Error counts for its fault object");
+        gw_load(TOP, 5);
+        ck(s_d[GW].lo[4].state == LS_ERROR, "last device 255 in line 15.15: 15.15.255 is no device address, Error");
+        gw_load(BAD, 5);
+        ck(s_d[GW].lo[4].state == LS_ERROR && s_d[GW].lo[4].err == KNX_ERR_CONFIG, "LongFrames 3: Error 3");
+        gw_load(L2, 5);
+        ck(s_d[GW].lo[4].state == LS_LOADED && vdev_faulty() == f0, "a good download again: Loaded, no fault");
+        vdev_max_apdu(15);
     }
     // availability: the capability of the device announce is kept, the link learns whether it sleeps
     fresh();

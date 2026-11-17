@@ -1,7 +1,7 @@
 {
   "schema": "knxgw-template/0",
   "id": "zigbee.class.dimmable",
-  "version": 2,
+  "version": 3,
   "title": "Zigbee dimmable light as a KNX dimming actuator",
   "radio": "zigbee",
   "match": {
@@ -423,18 +423,16 @@
     }
   ],
   "generated": {
-    "by": "distill/z2m_to_knx.py v3",
+    "by": "distill/z2m_to_knx.py v4",
     "from": "zigbee-herdsman-converters 26.57.0",
     "models": 23
   },
   "sources": [
     "zigbee-herdsman-converters 26.57.0 (MIT, (c) Koen Kanters), distilled by distill/dump_z2m.cjs (facts only)",
-    "KNX Standard v3.0.0, 07_20_02 Lighting Actuators: FB Dimming Actuator Basic p. 37, 55",
+    "KNX Standard v3.0.0, 07_20_02 Lighting Actuators: FB Dimming Actuator Basic p. 37, 55, state tables p. 44-46; 03_07_02 p. 29 (DPT 3.007)",
     "zigbee-herdsman cluster lightingColorCtrl: colorTempPhysicalMin 0x400B, colorTempPhysicalMax 0x400C"
   ],
   "open": [
-    "One product per class in the producer input: OpenKNXproducer expands a single product (ProcessInclude.cs)",
-    "MIN_SV/MAX_SV and MINCT/MAXCT are not enforced during relative dimming",
     "Parameters live in host.state; after a VM restart the defaults apply until the next params call",
     "The radio adapter must deliver 0.zigbeeModel (and colorTempPhysicalMin/Max) as datapoints"
   ],
@@ -456,11 +454,20 @@
       "serial_number": "49153",
       "version": 1,
       "bus_current_ma": 0,
+      "nonreg_version": 1,
       "order_number": "ZB-LIGHT-DIM"
     },
     "catalog": {
-      "section": "Devices",
-      "section_number": "1",
+      "sections": [
+        {
+          "number": "Zigbee2KNX",
+          "name": "Zigbee2KNX"
+        },
+        {
+          "number": "Lights",
+          "name": "Lights"
+        }
+      ],
       "item_number": "1"
     },
     "objects": [
@@ -482,7 +489,7 @@
         "size": "4 Bit",
         "flags": "CW",
         "dpt": "3.007",
-        "zigbee": "FB DAB Relative Setvalue Control -> brightness_move(_onoff)"
+        "zigbee": "FB DAB Relative Setvalue Control: step code 1..7 -> brightness by 1/2^(code-1) of 0..100 % at the dimming rate, 0 -> brightness_move stop; ROE below MIN_SV -> brightness_move_onoff"
       },
       {
         "number": 3,
@@ -522,7 +529,7 @@
         "size": "1 Bit",
         "flags": "CW",
         "dpt": "1.017",
-        "zigbee": "identify, models with flag 2 (manufacturer-specific object, not in FB DAB)"
+        "zigbee": "identify on 0 and 1 alike (DPT 1.017 trigger), models with flag 2 (manufacturer-specific object, not in FB DAB)"
       },
       {
         "number": 7,

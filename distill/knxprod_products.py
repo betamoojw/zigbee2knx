@@ -25,10 +25,15 @@ can update a device loaded with an earlier version instead of having it deleted 
 that on 2026-11-15 once a device of the new version had been inserted into the project; whether ReplacesVersions is
 needed for it is not tested. The head comment names the template as it lies in this tree.
 A full run refuses to overwrite an output that holds the same application number and version with other content
-(--overwrite-version: only for a version never given out).
+(--overwrite-version: only for a version never given out). It refuses as well, whatever the switch, what does not
+fit the versions given out (producer/issued.json, tools/knxprod_gen.py issued_problems): a version given out with
+other content, ReplacesVersions without every lower version given out, an id of such a version gone or changed.
+Order numbers: at most 50 characters, no blanks at the ends, two that differ only in case are the same; no '%' in
+the texts of a product.
 
-Every full run signs the template anew, and with another signature the ETS library gives the application another
-id: whoever has the product in a project then has to load its devices again.
+A full run signs the template. The same key gives an unchanged template the same signature (RFC 6979); another key
+or another template gives another signature, and the ETS library then gives the application another id: whoever has
+the product in a project has to load its devices again.
 
 --append (second form) adds catalog products to a producer input that exists, and nothing else. It signs nothing
 and needs no key. The application with its embedded template stays byte for byte, so its id stays and no device
@@ -67,6 +72,7 @@ KNXPROD_GEN = os.path.join(ROOT, "tools", "knxprod_gen.py")
 KGT = os.path.join(ROOT, "tools", "kgt.py")
 ENCODED = ['.', '%', ' ', '!', '"', '#', '$', '&', '(', ')', '+', '-', '/', ':', ';', '<', '>', '=', '?', '@', '[',
            '\\', ']', '^', '_', '{', '|', '}']
+ORDER_MAX = 50                    # OrderNumber is String50_t in the KNX schema
 
 
 class ProductError(Exception):
@@ -101,15 +107,27 @@ def atomic_write(path: str, data: bytes):
     raise ProductError(f"{path}: written three times, read back differently")
 
 
+def order_key(order: str) -> str:
+    """Two order numbers name the same product if they differ only in case or in blanks at the ends."""
+    return order.strip().casefold()
+
+
 def product_texts(p: dict, lang: str, item_ind: str, prod_ind: str, orders: list) -> tuple[str, str]:
     """The catalog item and the product of one model, as lines of the producer input. `orders` holds the order
     numbers there are and gets this one."""
     for key in ("vendor", "model", "description"):
         if not isinstance(p, dict) or not isinstance(p.get(key), str) or not p[key]:
             raise ProductError(f"product {p!r}: needs the texts vendor, model and description")
+        if "%" in p[key]:
+            raise ProductError(f"product {p.get('model')!r}: '%' in {key} (the build tools take %…% for a placeholder)")
     order = p["model"]
-    if order in orders:
-        raise ProductError(f"order number {order!r} twice")
+    if order != order.strip():
+        raise ProductError(f"order number {order!r}: blanks at its ends")
+    if len(order) > ORDER_MAX:
+        raise ProductError(f"order number {order!r}: {len(order)} characters, at most {ORDER_MAX} (KNX schema)")
+    same = [o for o in orders if order_key(o) == order_key(order)]
+    if same:
+        raise ProductError(f"order number {order!r} twice" + ("" if same[0] == order else f" (as {same[0]!r})"))
     orders.append(order)
     enc = get_encoded(order)
     if not re.fullmatch(r"[A-Za-z0-9.]+", enc):
@@ -332,6 +350,9 @@ def main():
     ap.add_argument("-o", "--out")
     ap.add_argument("--knxprod-gen", default=KNXPROD_GEN)
     ap.add_argument("--sign-key", help="passed to knxprod_gen (default there: $ZIGBEE2KNX_SIGN_KEY)")
+    ap.add_argument("--sign-cmd", help="passed to knxprod_gen: external signer (default there: $ZIGBEE2KNX_SIGN_CMD)")
+    ap.add_argument("--sign-pub", help="passed to knxprod_gen: public point of the external signer, hex")
+    ap.add_argument("--sign-fpr", help="passed to knxprod_gen: key of the external signer by fingerprint")
     ap.add_argument("--append", metavar="XML", help="add products to this producer input; nothing is signed")
     ap.add_argument("--products", metavar="FILE.json", help="with --append: the products, instead of a template directory")
     ap.add_argument("--kgt", default=KGT, help="with --append TEMPLATE_DIR: kgt.py that packs the template for the comparison")
@@ -349,6 +370,8 @@ def main():
     with tempfile.TemporaryDirectory() as td:
         single = os.path.join(td, "single.xml")
         cmd = [sys.executable, a.knxprod_gen, a.template, "-o", single] + (["--sign-key", a.sign_key] if a.sign_key else [])
+        for opt, val in (("--sign-cmd", a.sign_cmd), ("--sign-pub", a.sign_pub), ("--sign-fpr", a.sign_fpr)):
+            cmd += [opt, val] if val else []
         r = subprocess.run(cmd, capture_output=True, text=True)
         sys.stdout.write(r.stdout)
         sys.stderr.write(r.stderr)                 # the embedding: size, signer, round trip
@@ -359,9 +382,12 @@ def main():
     xml, replaces = replaces_versions(xml, m["knx"]["application"])
     xml, n = add_products(xml, products, lang)
     check(xml, n, replaces)
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from knxprod_gen import issued_problems, version_clash
+    problems = issued_problems(xml)                # versions given out: never again with other content, ids kept
+    if problems:
+        raise ProductError("against the versions given out (producer/issued.json): " + "; ".join(problems))
     if os.path.exists(out) and not a.overwrite_version:
-        sys.path.insert(0, os.path.join(ROOT, "tools"))
-        from knxprod_gen import version_clash
         clash = version_clash(open(out, encoding="utf-8").read(), xml)
         if clash:
             raise ProductError(f"{out}: {clash}")

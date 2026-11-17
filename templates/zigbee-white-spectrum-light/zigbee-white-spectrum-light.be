@@ -8,6 +8,7 @@ static KO_IDENTIFY = 6
 static KO_AVAILABLE = 11
 static EP = 1
 static BRI_MAX = 254
+static SETTLE_MS = 1000
 static POWER_ON = ['off', 'on', 'toggle', 'previous']
 static START = ['minimum', 'previous']
 static F_LEVEL_START = 1
@@ -74,16 +75,76 @@ if c['trans'] > 0
 host.dp_set(zb_light.EP, 'transition', real(c['trans']) / 10)
 end
 end
+static def level()
+var Z = zb_light
+var m = host.state_get('lv')
+if m != nil && host.now_ms() < m[2] + m[3] + Z.SETTLE_MS return m[1] end
+if host.dp_get(Z.EP, 'state') != 'ON' return 0 end
+var b = host.dp_get(Z.EP, 'brightness')
+return b == nil ? 0 : b
+end
+static def moving(key, at, to, tenths)
+host.state_set(key, [at, to, host.now_ms(), tenths * 100])
+end
+static def stopped(key)
+var m = host.state_get(key)
+var now = host.now_ms()
+if m != nil && now < m[2] + m[3]
+var at = m[0] + (m[1] - m[0]) * (now - m[2]) / m[3]
+host.state_set(key, [at, at, now, 0])
+end
+end
 static def set_bri(c, bri)
 var Z = zb_light
 var lo = Z.pct_to_bri(c['min'])
 var hi = Z.pct_to_bri(c['max'])
+var to = Z.clamp(bri, lo, hi)
+Z.moving('lv', Z.level(), to, c['trans'])
 Z.transition(c)
-host.dp_set(Z.EP, 'brightness', Z.clamp(bri, lo, hi))
+host.dp_set(Z.EP, 'brightness', to)
 end
 static def off(c)
-zb_light.transition(c)
-host.dp_set(zb_light.EP, 'state', 'OFF')
+var Z = zb_light
+Z.moving('lv', Z.level(), 0, c['trans'])
+Z.transition(c)
+host.dp_set(Z.EP, 'state', 'OFF')
+end
+static def step(c, raw)
+var Z = zb_light
+var code = raw & 0x07
+if code == 0
+Z.stopped('lv')
+host.dp_set(Z.EP, c['roe'] ? 'brightness_move_onoff' : 'brightness_move', 'stop')
+return
+end
+var lo = Z.pct_to_bri(c['min'])
+var hi = Z.pct_to_bri(c['max'])
+var d = (Z.BRI_MAX * 2 / (1 << (code - 1)) + 1) / 2
+var at = Z.level()
+var to = 0
+if (raw & 0x08) != 0
+if at == 0
+host.dp_set(Z.EP, 'brightness', lo)
+at = lo
+end
+to = Z.clamp(at + d, lo, hi)
+elif at == 0
+return
+elif c['roe'] && at - d < lo
+Z.moving('lv', at, 0, (at * 10 + c['rate'] / 2) / c['rate'])
+host.dp_set(Z.EP, 'brightness_move_onoff', -c['rate'])
+return
+else
+to = Z.clamp(at - d, lo, hi)
+end
+if to == at
+Z.moving('lv', at, to, 0)
+return
+end
+var t = ((to > at ? to - at : at - to) * 10 + c['rate'] / 2) / c['rate']
+Z.moving('lv', at, to, t)
+if t > 0 host.dp_set(Z.EP, 'transition', real(t) / 10) end
+host.dp_set(Z.EP, 'brightness', to)
 end
 static def k_word(p, o)
 return (p[o] << 8) | p[o + 1]
@@ -106,16 +167,66 @@ b.add((k >> 8) & 0xFF, 1)
 b.add(k & 0xFF, 1)
 return b
 end
-static def set_ct(c, k)
+static def ct_limits(c)
 var Z = zb_light
 var r = Z.ct_range()
 var lo = Z.clamp(c['ctmin'], Z.mired_to_k(r[1]), Z.mired_to_k(r[0]))
 var hi = Z.clamp(c['ctmax'], Z.mired_to_k(r[1]), Z.mired_to_k(r[0]))
 if lo > hi lo = hi end
-var kk = Z.clamp(k, lo, hi)
+return [lo, hi]
+end
+static def ct_now()
+var Z = zb_light
+var m = host.state_get('ctm')
+if m != nil && host.now_ms() < m[2] + m[3] + Z.SETTLE_MS return m[1] end
+var v = host.dp_get(Z.EP, 'color_temp')
+return v != nil && v > 0 ? Z.mired_to_k(v) : nil
+end
+static def set_ct(c, k)
+var Z = zb_light
+var r = Z.ct_range()
+var lim = Z.ct_limits(c)
+var kk = Z.clamp(k, lim[0], lim[1])
 host.ko_status(Z.KO_CT_RANGE, kk != k ? bytes('01') : bytes('00'), false)
-if c['ctfade'] && !Z.has(Z.F_FREEZE) Z.transition(c) end
+var fade = c['ctfade'] && !Z.has(Z.F_FREEZE)
+Z.moving('ctm', kk, kk, fade ? c['trans'] : 0)
+if fade Z.transition(c) end
 host.dp_set(Z.EP, 'color_temp', Z.clamp((1000000 + kk / 2) / kk, r[0], r[1]))
+end
+static def ct_step(c, raw)
+var Z = zb_light
+var code = raw & 0x07
+var up = (raw & 0x08) != 0
+var r = Z.ct_range()
+if code == 0
+Z.stopped('ctm')
+host.dp_set(Z.EP, 'color_temp_move', 'stop')
+return
+end
+var k = Z.ct_now()
+if code == 1
+if k != nil
+var a = Z.clamp((1000000 + k / 2) / k, r[0], r[1])
+var b = up ? r[0] : r[1]
+Z.moving('ctm', k, Z.mired_to_k(b), ((a > b ? a - b : b - a) * 10 + c['ctrate'] / 2) / c['ctrate'])
+end
+host.dp_set(Z.EP, 'color_temp_move', up ? -c['ctrate'] : c['ctrate'])
+return
+end
+var lim = Z.ct_limits(c)
+if k == nil k = (lim[0] + lim[1]) / 2 end
+var d = ((lim[1] - lim[0]) * 2 / (1 << (code - 1)) + 1) / 2
+var kk = Z.clamp(up ? k + d : k - d, lim[0], lim[1])
+if kk == k
+Z.moving('ctm', k, k, 0)
+return
+end
+var a = Z.clamp((1000000 + k / 2) / k, r[0], r[1])
+var b = Z.clamp((1000000 + kk / 2) / kk, r[0], r[1])
+var t = Z.has(Z.F_FREEZE) ? 0 : ((a > b ? a - b : b - a) * 10 + c['ctrate'] / 2) / c['ctrate']
+Z.moving('ctm', k, kk, t)
+if t > 0 host.dp_set(Z.EP, 'transition', real(t) / 10) end
+host.dp_set(Z.EP, 'color_temp', b)
 end
 end
 def knx_write(ko, raw)
@@ -142,16 +253,9 @@ else
 Z.set_bri(c, Z.clamp((raw[0] * Z.BRI_MAX + 127) / 255, Z.model()[0], Z.BRI_MAX))
 end
 elif ko == Z.KO_DIM && raw.size() == 1
-var key = c['roe'] ? 'brightness_move_onoff' : 'brightness_move'
-if (raw[0] & 0x07) == 0
-host.dp_set(Z.EP, key, 'stop')
-elif (raw[0] & 0x08) != 0
-host.dp_set(Z.EP, key, c['rate'])
-else
-host.dp_set(Z.EP, key, -c['rate'])
-end
+Z.step(c, raw[0])
 elif ko == Z.KO_IDENTIFY && raw.size() == 1
-if (raw[0] & 1) != 0 && Z.has(Z.F_IDENTIFY) host.dp_set(Z.EP, 'identify', 'identify') end
+if Z.has(Z.F_IDENTIFY) host.dp_set(Z.EP, 'identify', 'identify') end
 elif ko == Z.KO_CT && raw.size() == 2
 var k = (raw[0] << 8) | raw[1]
 if k > 0
@@ -159,13 +263,7 @@ host.state_set('ct_abs', k)
 Z.set_ct(c, k)
 end
 elif ko == Z.KO_CT_REL && raw.size() == 1
-if (raw[0] & 0x07) == 0
-host.dp_set(Z.EP, 'color_temp_move', 'stop')
-elif (raw[0] & 0x08) != 0
-host.dp_set(Z.EP, 'color_temp_move', -c['ctrate'])
-else
-host.dp_set(Z.EP, 'color_temp_move', c['ctrate'])
-end
+Z.ct_step(c, raw[0])
 else
 host.log('ko_write_ignored', {'ko': ko, 'value': raw.tohex()})
 end

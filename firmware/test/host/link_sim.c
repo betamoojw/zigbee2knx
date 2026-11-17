@@ -278,6 +278,14 @@ static void reset_all(void)
     g_boot = true;
     if (s_txq) { s_txq->head = s_txq->count = 0; } else { s_txq = xQueueCreate(16, sizeof(txf_t)); }
     s_sink = sink_fn;
+    s_lost = NULL;
+}
+
+// checks of the scenarios that assert (S13 on); the others print what happened
+static int g_ck_pass, g_ck_fail;
+static void ck(bool ok, const char *what)
+{
+    if (ok) g_ck_pass++; else { g_ck_fail++; printf("  FAIL: %s\n", what); }
 }
 
 static void run(int64_t t_end)
@@ -571,6 +579,68 @@ static void s12(void)
            g_bus[b].host_ack ? "YES" : "no", (unsigned long)st.ext_other, g_bus[c].host_ack ? "yes" : "NO", g_sink_n);
 }
 
+// what the link reports as given up
+static int g_lost_n;
+static knx_frame_t g_lost_f;
+static void lost_fn(const knx_frame_t *f) { g_lost_n++; g_lost_f = *f; }
+
+static void s13(void)
+{
+    printf("S13 frames of ours the link gives up are reported back, frames the chip sent are not\n");
+    uint8_t st1[2] = {0x00, 0x81}, big[40];
+    for (int i = 0; i < 40; i++) big[i] = (uint8_t)(i + 1);
+    big[0] = 0x00; big[1] = 0x80;
+    // no L_Data.con at all
+    reset_all();
+    s_lost = lost_fn;
+    g_lost_n = 0;
+    knx_link_ack_lists(MY_IA, 2, MY_GA, 2, true);
+    g_chip.no_con = true;
+    send_at(400000, 0xFF01, 0xF604, true, 3, st1, 2);
+    run(2000000);
+    ck(g_lost_n == 1 && st.tx_timeout == 1 && g_lost_f.src == 0xFF01 && g_lost_f.dst == 0xF604 && g_lost_f.group &&
+       g_lost_f.own && g_lost_f.len == 2 && g_lost_f.tpdu[0] == 0x00 && g_lost_f.tpdu[1] == 0x81,
+       "no L_Data.con: reported once, as the frame it was");
+    // the chip sent it and nobody acknowledged it (negative L_Data.con)
+    reset_all();
+    s_lost = lost_fn;
+    g_lost_n = 0;
+    knx_link_ack_lists(MY_IA, 2, MY_GA, 2, true);
+    g_chip.ack_others = false;
+    send_at(400000, 0xFF01, 0xF604, true, 3, st1, 2);
+    run(2000000);
+    ck(g_lost_n == 0 && st.tx_noack == 1, "negative L_Data.con: it was on the bus, nothing reported");
+    // acknowledged
+    reset_all();
+    s_lost = lost_fn;
+    g_lost_n = 0;
+    knx_link_ack_lists(MY_IA, 2, MY_GA, 2, true);
+    send_at(400000, 0xFF01, 0xF604, true, 3, st1, 2);
+    run(2000000);
+    ck(g_lost_n == 0 && st.tx_ack == 1, "positive L_Data.con: nothing reported");
+    // an error flag of the chip while the frame is written
+    reset_all();
+    s_lost = lost_fn;
+    g_lost_n = 0;
+    knx_link_ack_lists(MY_IA, 2, MY_GA, 2, true);
+    send_at(400000, 0xFF02, 0xF601, true, 3, st1, 2);
+    rx_add(401200, 0x87);   // U_State.ind with an error flag
+    run(2000000);
+    ck(g_lost_n == 1 && st.tx_err == 1 && g_lost_f.src == 0xFF02 && g_lost_f.dst == 0xF601,
+       "an error flag of the chip while it was written: reported");
+    // an extended frame without L_Data.con: addresses and length from the extended format
+    reset_all();
+    s_lost = lost_fn;
+    g_lost_n = 0;
+    knx_link_ack_lists(MY_IA, 2, MY_GA, 2, true);
+    g_chip.no_con = true;
+    send_at(400000, 0xFF01, 0x1105, false, 3, big, 40);
+    run(2000000);
+    ck(g_lost_n == 1 && g_lost_f.ext && !g_lost_f.group && g_lost_f.src == 0xFF01 && g_lost_f.dst == 0x1105 &&
+       g_lost_f.len == 40 && memcmp(g_lost_f.tpdu, big, 40) == 0, "an extended frame given up: reported whole");
+    counters("counters of the last run");
+}
+
 int main(void)
 {
     s1();
@@ -592,5 +662,7 @@ int main(void)
     s10(true);
     s11();
     s12();
-    return 0;
+    s13();
+    printf("link checks: %d passed, %d failed\n", g_ck_pass, g_ck_fail);
+    return g_ck_fail != 0;
 }

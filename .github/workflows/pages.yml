@@ -1,0 +1,55 @@
+# The web installer on GitHub Pages: flasher/index.html with the TUL32 images of a release. The images are taken
+# from the release assets, never from the repository. Pages has to be set to "GitHub Actions" once.
+name: Web installer
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Page and images of the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          tag="${TAG:-$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName -q '.[0].tagName')}"
+          ver="${tag#v}"
+          mkdir -p site
+          sed "s/@VERSION@/${ver}/g" flasher/index.html > site/index.html
+          for part in tul32-bootloader tul32-partition-table tul32; do
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir site --pattern "zigbee2knx-${ver}-${part}.bin"
+          done
+          python3 - "$ver" > site/manifest.json <<'PY'
+          import json, sys
+          v = sys.argv[1]
+          parts = [("tul32-bootloader", 0x0), ("tul32-partition-table", 0x8000), ("tul32", 0x10000)]
+          print(json.dumps({"name": "zigbee2knx", "version": v, "new_install_prompt_erase": True,
+                            "builds": [{"chipFamily": "ESP32-C6", "improv": False,
+                                        "parts": [{"path": f"zigbee2knx-{v}-{p}.bin", "offset": o} for p, o in parts]}]},
+                           indent=2))
+          PY
+          ls -l site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

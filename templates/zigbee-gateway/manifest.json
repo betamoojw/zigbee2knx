@@ -1,7 +1,7 @@
 {
   "schema": "knxgw-template/0",
   "id": "zigbee.gateway",
-  "version": 2,
+  "version": 3,
   "title": "Zigbee gateway: the TUL32 itself as a KNX device",
   "radio": "none",
   "match": {},
@@ -20,7 +20,8 @@
     "Application number 0xC000 under M-00FA (KNX Association), as open-source KNX projects use it; chosen by this project, not registered.",
     "Default range 1..48 is a test setting; the default for a product is not decided yet.",
     "Zigbee channel is not a parameter yet (fixed in the firmware).",
-    "Version 2: objects 5-12. ETS 6.4.1 does not show PID_ERROR_CODE (28), so the reason of a refused download is only visible here."
+    "Version 2: objects 5-12. ETS 6.4.1 does not show PID_ERROR_CODE (28), so the reason of a refused download is only visible here.",
+    "Version 3: parameter LongFrames (octet 4). Long frames through line couplers and USB interfaces are not tested."
   ],
   "knx": {
     "manufacturer": "M-00FA",
@@ -28,9 +29,10 @@
     "application": {
       "name": "Zigbee gateway",
       "number": 49152,
-      "version": 2,
+      "version": 3,
       "replaces": [
-        1
+        1,
+        2
       ],
       "mask": "MV-07B0",
       "order_info": "ZB-GATEWAY"
@@ -43,8 +45,16 @@
       "order_number": "ZB-GATEWAY"
     },
     "catalog": {
-      "section": "Devices",
-      "section_number": "1",
+      "sections": [
+        {
+          "number": "Zigbee2KNX",
+          "name": "Zigbee2KNX"
+        },
+        {
+          "number": "Gateway",
+          "name": "Gateway"
+        }
+      ],
       "item_number": "1"
     },
     "objects": [
@@ -198,10 +208,27 @@
           "min": 10,
           "max": 254
         }
+      },
+      "LongFrames": {
+        "bits": 8,
+        "enum": [
+          [
+            0,
+            "Standard frames only"
+          ],
+          [
+            1,
+            "Long frames, 55 octets"
+          ],
+          [
+            2,
+            "Long frames, 66 octets"
+          ]
+        ]
       }
     },
     "parameters": {
-      "segment_size": 4,
+      "segment_size": 5,
       "block": {
         "name": "General",
         "text": "Zigbee gateway"
@@ -238,6 +265,14 @@
           "type": "Seconds",
           "default": 180,
           "zigbee": "pair window"
+        },
+        {
+          "offset": 4,
+          "name": "LongFrames",
+          "text": "Long frames for downloads",
+          "type": "LongFrames",
+          "default": 1,
+          "zigbee": "the maximum APDU length (PID 56) the gateway's virtual devices report, which sets the frames ETS downloads with: 0 = 15 octets (standard frames), 1 = 55, 2 = 66 octets"
         }
       ]
     }

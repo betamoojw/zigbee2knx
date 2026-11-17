@@ -21,12 +21,14 @@
     "file": "zigbee-remote.be"
   },
   "datapoints": {
-    "_doc": "<endpoint>.<property>; endpoint 0 = device identity and availability (gateway: true/false). zcl.cmd: 'cluster,command,payload' in hex, a command the remote sent to the gateway (gateway zlink.c). battery: percent.",
+    "_doc": "<endpoint>.<property>; endpoint 0 = device identity (zigbeeModel, swBuildId: Basic SWBuildID) and availability (gateway: true/false). zcl.cmd: 'cluster,command,payload' in hex, a command the remote sent to the gateway (gateway zlink.c). batteryPercentageRemaining: the ZCL attribute as reported, 0..254 (nothing for 0xFF); battery: percent, from gateways that convert it themselves.",
     "write": [],
     "events": [
       "0.zigbeeModel",
+      "0.swBuildId",
       "0.availability",
       "1.zcl.cmd",
+      "1.batteryPercentageRemaining",
       "1.battery"
     ],
     "master": []
@@ -39,7 +41,12 @@
         "TRADFRI on/off switch"
       ],
       "entry": [
-        1
+        5,
+        [
+          2,
+          4,
+          0
+        ]
       ],
       "model": "E1743"
     },
@@ -50,7 +57,12 @@
         "SYMFONISK Sound Controller"
       ],
       "entry": [
-        1
+        5,
+        [
+          2,
+          4,
+          0
+        ]
       ],
       "model": "E1744"
     },
@@ -61,7 +73,12 @@
         "TRADFRI SHORTCUT Button"
       ],
       "entry": [
-        1
+        5,
+        [
+          2,
+          4,
+          0
+        ]
       ],
       "model": "E1812"
     },
@@ -72,7 +89,12 @@
         "KNYCKLAN Open/Close remote"
       ],
       "entry": [
-        1
+        5,
+        [
+          2,
+          4,
+          0
+        ]
       ],
       "model": "E1841"
     },
@@ -84,7 +106,8 @@
         "RODRET wireless dimmer"
       ],
       "entry": [
-        1
+        1,
+        []
       ],
       "model": "E2201"
     },
@@ -95,25 +118,28 @@
         "TRADFRI wireless dimmer"
       ],
       "entry": [
-        1
+        3,
+        []
       ],
       "model": "ICTC-G-1"
     }
   ],
   "generated": {
-    "by": "distill/z2m_to_knx.py v3",
+    "by": "distill/z2m_to_knx.py v4",
     "from": "zigbee-herdsman-converters 26.57.0",
     "models": 6
   },
   "sources": [
     "zigbee-herdsman-converters 26.57.0 (MIT, (c) Koen Kanters), distilled by distill/dump_z2m.cjs (facts only)",
+    "zigbee-herdsman-converters 26.57.0 lib/ikea.ts ikeaBattery() and devices/ikea.ts: which models report BatteryPercentageRemaining in percent (model table flags 2 and 4)",
     "ZCL: On/Off cluster commands 0x00-0x02, 0x40-0x42; Level Control commands 0x00-0x07",
-    "KNX DPT 3.007 (dimming control), 5.001, 1.001"
+    "KNX DPT 3.007 (dimming control: step code 1..7 = 1/2^(code-1) of the range, 0 = break), 5.001, 1.001"
   ],
   "open": [
     "The gateway binds the remote's On/Off and Level clusters to itself when it links the device; a sleeping remote may miss that and needs a button press while the gateway asks",
     "Long press and release of the IKEA remotes map to move and stop as Zigbee2MQTT reads them; not seen on air yet",
-    "Remotes with arrows, scenes or double clicks are not in this class"
+    "Remotes with arrows, scenes or double clicks are not in this class",
+    "Which models report the battery in percent is a table from the Zigbee2MQTT definitions; not checked on a device"
   ],
   "knx": {
     "manufacturer": "M-00FA",
@@ -133,11 +159,20 @@
       "serial_number": "49156",
       "version": 1,
       "bus_current_ma": 0,
+      "nonreg_version": 1,
       "order_number": "ZB-REMOTE"
     },
     "catalog": {
-      "section": "Devices",
-      "section_number": "1",
+      "sections": [
+        {
+          "number": "Zigbee2KNX",
+          "name": "Zigbee2KNX"
+        },
+        {
+          "number": "Remotes",
+          "name": "Remotes"
+        }
+      ],
       "item_number": "1"
     },
     "objects": [
@@ -159,7 +194,7 @@
         "size": "4 Bit",
         "flags": "CT",
         "dpt": "3.007",
-        "zigbee": "Level move -> start brighter/darker (100 %), stop -> stop, step -> 12.5 %"
+        "zigbee": "Level move -> start brighter/darker (step code 1, 100 %), stop -> stop (0), step -> the step code nearest to the step size (1/2^(code-1) of 254)"
       },
       {
         "number": 3,
@@ -179,7 +214,7 @@
         "size": "1 Byte",
         "flags": "CRT",
         "dpt": "5.001",
-        "zigbee": "battery (BatteryPercentageRemaining / 2)"
+        "zigbee": "batteryPercentageRemaining (half percent by ZCL; percent for the models with flag 2, and with flag 4 below the firmware version of the entry, read from swBuildId)"
       },
       {
         "number": 5,
@@ -194,12 +229,12 @@
       {
         "number": 6,
         "name": "Available",
-        "text": "Zigbee device reachable",
+        "text": "Zigbee device heard in the last 25 h",
         "function": "Status",
         "size": "1 Bit",
         "flags": "CRT",
         "dpt": "1.002",
-        "zigbee": "0.availability <- gateway (firmware avail.h): true while the device answers, false when not; the first true after linking only fills the shadow"
+        "zigbee": "0.availability <- gateway (firmware avail.h): a battery device sleeps and is never asked; true from its first frame, false after 25 h without one (also a remote that is only not used); no value after a start of the gateway until its first frame"
       }
     ],
     "parameter_types": {

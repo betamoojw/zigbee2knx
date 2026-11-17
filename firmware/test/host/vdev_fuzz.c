@@ -58,9 +58,13 @@ static bool alloc_fails(void)
 static void *stub_malloc(size_t n) { return alloc_fails() ? NULL : malloc(n); }
 static void *stub_realloc(void *p, size_t n) { return alloc_fails() ? NULL : realloc(p, n); }
 
+// printing while the device server's lock is held (kept up by the stub mutex for s_mx)
+static int g_mx_held;
+static unsigned long g_print_locked;
 static void stub_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void stub_printf(const char *fmt, ...)
 {
+    if (g_mx_held) g_print_locked++;
     char buf[4096];
     va_list ap;
     va_start(ap, fmt);
@@ -76,6 +80,21 @@ static void stub_printf(const char *fmt, ...)
 #define realloc(p, n) stub_realloc(p, n)
 #define printf(...) stub_printf(__VA_ARGS__)
 #include "vdev.c"
+#ifdef WITH_GW
+// The gateway's own application runs for real (vdev_sem): its names that vdev.c has as well are renamed, and every
+// note goes through the recorder below before it reaches gw.c
+#define TAG TAG_gw
+#define ia_str ia_str_gw
+void gw_note_real(int kind, uint16_t ia, uint8_t err, const char *why);
+#define gw_note gw_note_real
+#include "gw.c"
+#undef gw_note
+#undef ia_str
+#undef TAG
+#endif
+#ifdef WITH_CONSOLE
+#include "console.c"   // its command functions, called directly by the tests
+#endif
 #undef malloc
 #undef realloc
 #undef printf
@@ -103,10 +122,80 @@ esp_err_t esp_read_mac(uint8_t *mac, int type)
     return ESP_OK;
 }
 
-// NVS in RAM: every blob in a block of its exact size
-#define NKEY 64
+// SHA-256 (FIPS 180-4) for psa_hash_compute(); vdev_sem checks it against the FIPS 180-2 examples
+static void sha256(const uint8_t *m, size_t n, uint8_t out[32])
+{
+    static const uint32_t K[64] = {
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98,
+        0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+        0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8,
+        0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819,
+        0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+        0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2};
+    uint32_t h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    size_t total = ((n + 9 + 63) / 64) * 64;
+    uint8_t *b = calloc(1, total);
+    memcpy(b, m, n);
+    b[n] = 0x80;
+    uint64_t bits = (uint64_t)n * 8;
+    for (int i = 0; i < 8; i++) b[total - 1 - i] = (uint8_t)(bits >> (8 * i));
+#define ROR(x, r) ((x) >> (r) | (x) << (32 - (r)))
+    for (size_t off = 0; off < total; off += 64) {
+        uint32_t w[64];
+        for (int i = 0; i < 16; i++) {
+            w[i] = (uint32_t)b[off + 4 * i] << 24 | (uint32_t)b[off + 4 * i + 1] << 16 | (uint32_t)b[off + 4 * i + 2] << 8 | b[off + 4 * i + 3];
+        }
+        for (int i = 16; i < 64; i++) {
+            uint32_t s0 = ROR(w[i - 15], 7) ^ ROR(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            uint32_t s1 = ROR(w[i - 2], 17) ^ ROR(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        uint32_t a = h[0], bb = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+        for (int i = 0; i < 64; i++) {
+            uint32_t t1 = hh + (ROR(e, 6) ^ ROR(e, 11) ^ ROR(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i];
+            uint32_t t2 = (ROR(a, 2) ^ ROR(a, 13) ^ ROR(a, 22)) + ((a & bb) ^ (a & c) ^ (bb & c));
+            hh = g; g = f; f = e; e = d + t1; d = c; c = bb; bb = a; a = t1 + t2;
+        }
+        h[0] += a; h[1] += bb; h[2] += c; h[3] += d; h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+    }
+#undef ROR
+    free(b);
+    for (int i = 0; i < 8; i++) {
+        out[4 * i] = (uint8_t)(h[i] >> 24); out[4 * i + 1] = (uint8_t)(h[i] >> 16);
+        out[4 * i + 2] = (uint8_t)(h[i] >> 8); out[4 * i + 3] = (uint8_t)h[i];
+    }
+}
+psa_status_t psa_crypto_init(void) { return PSA_SUCCESS; }
+psa_status_t psa_hash_compute(psa_algorithm_t alg, const uint8_t *in, size_t n, uint8_t *hash, size_t hn, size_t *got)
+{
+    if (alg != PSA_ALG_SHA_256 || hn < 32) return -1;
+    sha256(in, n, hash);
+    *got = 32;
+    return PSA_SUCCESS;
+}
+
+// NVS in RAM: every blob in a block of its exact size. With g_nvs_cap the partition has that many entries of 32 B and
+// a blob takes its data entries, a header per chunk (one per page of 126 entries it spans) and its index; NVS keeps one
+// page free (nvs_pagemanager.cpp, fillStats) and writes a new blob before the old one of its key goes.
+#define NKEY 128
 static struct { char key[16]; uint8_t *b; size_t n; } g_nvs[NKEY];
 static int g_nvs_fail;   // nvs_set_blob fails (full partition)
+static size_t g_nvs_cap;            // 0: no model, room never runs out and nvs_get_stats() fails
+static unsigned long g_nvs_nospace, g_nvs_sets;   // writes refused for want of room; writes tried
+static size_t nvs_entries(size_t n) { return (n + 31) / 32 + (n / 4000 + 1) + 1; }
+static size_t nvs_used(void)
+{
+    size_t u = 0;
+    for (int i = 0; i < NKEY; i++) u += g_nvs[i].b ? nvs_entries(g_nvs[i].n) : 0;
+    return u;
+}
+static size_t nvs_available(void)
+{
+    size_t u = nvs_used(), fr = g_nvs_cap > u ? g_nvs_cap - u : 0;
+    return fr > 126 ? fr - 126 : 0;
+}
 static int nvs_find(const char *key)
 {
     for (int i = 0; i < NKEY; i++) {
@@ -128,7 +217,12 @@ esp_err_t nvs_get_blob(nvs_handle_t h, const char *key, void *out, size_t *len)
 esp_err_t nvs_set_blob(nvs_handle_t h, const char *key, const void *val, size_t len)
 {
     (void)h;
+    g_nvs_sets++;
     if (g_nvs_fail) return ESP_ERR_NVS_NOT_ENOUGH_SPACE;
+    if (g_nvs_cap && nvs_entries(len) > nvs_available()) {
+        g_nvs_nospace++;
+        return ESP_ERR_NVS_NOT_ENOUGH_SPACE;
+    }
     int i = nvs_find(key);
     if (i < 0) {
         for (i = 0; i < NKEY && g_nvs[i].b; i++) {}
@@ -143,7 +237,18 @@ esp_err_t nvs_set_blob(nvs_handle_t h, const char *key, const void *val, size_t 
     return ESP_OK;
 }
 esp_err_t nvs_commit(nvs_handle_t h) { (void)h; return ESP_OK; }
-esp_err_t nvs_get_stats(const char *p, nvs_stats_t *st) { (void)p; memset(st, 0, sizeof *st); return ESP_FAIL; }
+esp_err_t nvs_get_stats(const char *p, nvs_stats_t *st)
+{
+    (void)p;
+    memset(st, 0, sizeof *st);
+    if (!g_nvs_cap) return ESP_FAIL;
+    st->total_entries = g_nvs_cap;
+    st->used_entries = nvs_used();
+    st->free_entries = g_nvs_cap > st->used_entries ? g_nvs_cap - st->used_entries : 0;
+    st->available_entries = nvs_available();
+    st->namespace_count = 1;
+    return ESP_OK;
+}
 esp_err_t nvs_erase_key(nvs_handle_t h, const char *key)
 {
     (void)h;
@@ -178,9 +283,30 @@ esp_err_t nvs_entry_info(const nvs_iterator_t it, nvs_entry_info_t *info)
     return ESP_OK;
 }
 void nvs_release_iterator(nvs_iterator_t it) { (void)it; }
-esp_err_t nvs_open_from_partition(const char *p, const char *ns, int m, nvs_handle_t *h) { (void)p; (void)ns; (void)m; *h = 1; return ESP_OK; }
-esp_err_t nvs_flash_init_partition(const char *p) { (void)p; return ESP_OK; }
-esp_err_t nvs_flash_erase_partition(const char *p) { (void)p; return ESP_OK; }
+static esp_err_t g_nvs_init_err, g_nvs_open_err;   // what the next init / open of the partition returns, once
+static int g_nvs_erased;
+esp_err_t nvs_open_from_partition(const char *p, const char *ns, int m, nvs_handle_t *h)
+{
+    (void)p; (void)ns; (void)m;
+    esp_err_t e = g_nvs_open_err;
+    g_nvs_open_err = ESP_OK;
+    *h = 1;
+    return e;
+}
+esp_err_t nvs_flash_init_partition(const char *p)
+{
+    (void)p;
+    esp_err_t e = g_nvs_init_err;
+    g_nvs_init_err = ESP_OK;
+    return e;
+}
+esp_err_t nvs_flash_erase_partition(const char *p)
+{
+    (void)p;
+    g_nvs_erased++;
+    for (int i = 0; i < NKEY; i++) { free(g_nvs[i].b); g_nvs[i].b = NULL; }
+    return ESP_OK;
+}
 
 // FreeRTOS
 struct stub_queue { unsigned n, size, head, count; uint8_t *buf; };
@@ -207,6 +333,12 @@ BaseType_t xQueueReceive(QueueHandle_t q, void *item, TickType_t t)
     q->count--;
     return pdTRUE;
 }
+UBaseType_t uxQueueMessagesWaiting(QueueHandle_t q) { return q->count; }
+// The device server's task, as far as one thread can have it: it runs at a higher priority than every caller of the
+// device server, so whenever its lock comes free it takes what waits in its queues (drain()). The timer part runs where
+// a test lets time pass (tick_for, the fuzzer's "time passes").
+static bool g_task_runs, g_draining;
+static unsigned long g_notified;
 struct stub_sem { int depth; };
 SemaphoreHandle_t xSemaphoreCreateMutex(void) { return calloc(1, sizeof(struct stub_sem)); }
 BaseType_t xSemaphoreTake(SemaphoreHandle_t s, TickType_t t)
@@ -214,14 +346,29 @@ BaseType_t xSemaphoreTake(SemaphoreHandle_t s, TickType_t t)
     (void)t;
     if (s->depth) { fprintf(stderr, "HARNESS: mutex taken twice by the same thread (self-deadlock)\n"); abort(); }
     s->depth++;
+    if (s == s_mx) g_mx_held = 1;
     return pdTRUE;
 }
-BaseType_t xSemaphoreGive(SemaphoreHandle_t s) { s->depth--; return pdTRUE; }
+BaseType_t xSemaphoreGive(SemaphoreHandle_t s)
+{
+    s->depth--;
+    if (s == s_mx) g_mx_held = 0;
+    if (g_task_runs && s == s_mx && !s->depth && !g_draining) {
+        g_draining = true;
+        drain();
+        g_draining = false;
+    }
+    return pdTRUE;
+}
 BaseType_t xTaskCreate(void (*fn)(void *), const char *name, uint32_t st, void *arg, UBaseType_t prio, TaskHandle_t *h)
 {
-    (void)fn; (void)name; (void)st; (void)arg; (void)prio; (void)h;
+    (void)name; (void)st; (void)arg; (void)prio;
+    if (fn == vdev_task) g_task_runs = true;
+    if (h) *h = (TaskHandle_t)fn;
     return pdTRUE;
 }
+BaseType_t xTaskNotifyGive(TaskHandle_t h) { (void)h; g_notified++; return pdTRUE; }
+uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t wait) { (void)clear; (void)wait; return 0; }
 
 // link
 static unsigned long g_tx_n, g_tx_fail, g_ack_calls;
@@ -267,6 +414,7 @@ void knx_link_ack_lists(const uint16_t *ia, int nia, const uint16_t *ga, int nga
     tr_bytes(ga, (size_t)nga * 2);
 }
 void knx_link_sink(knx_sink_t s) { (void)s; }
+void knx_link_lost(knx_sink_t s) { (void)s; }
 
 // pair, zlink, bvm
 void pair_knx_probe(uint16_t src, uint16_t target, int own) { tr("PAIR probe %04x %04x %d", src, target, own); }
@@ -277,8 +425,10 @@ void zlink_reread(int inst) { tr("ZLINK reread %d", inst); }
 void zlink_announced(int inst) { tr("ZLINK announced %d", inst); }
 static int g_sleepy_calls, g_sleepy_last = -1;
 bool zlink_is_off(int inst) { (void)inst; return false; }
+bool zlink_params_due(int inst) { (void)inst; return false; }
 void zlink_discover(uint16_t addr) { tr("ZLINK discover %04x", addr); }
-void zlink_gone(int inst, bool gone) { tr("ZLINK gone %d %d", inst, gone); }
+static int g_gone_n, g_gone_inst, g_gone_val;
+void zlink_gone(int inst, bool gone) { g_gone_n++; g_gone_inst = inst; g_gone_val = gone; tr("ZLINK gone %d %d", inst, gone); }
 void zlink_sleepy(int inst, bool sleepy) { g_sleepy_calls++; g_sleepy_last = sleepy; tr("ZLINK sleepy %d %d", inst, sleepy); }
 void pair_knx_poll(uint16_t src) { tr("PAIR poll %04x", src); }
 static int g_assigned_n, g_unloaded_n, g_unloaded_slot = -1;
@@ -287,32 +437,128 @@ void pair_knx_assigned(int slot, uint16_t ia) { g_assigned_n++; tr("PAIR assigne
 void pair_knx_unloaded(int slot, uint16_t old) { g_unloaded_n++; g_unloaded_slot = slot; g_unloaded_old = old; tr("PAIR unloaded %d %04x", slot, old); }
 static int g_prog_ended_n, g_prog_ended_slot = -1;
 void pair_knx_prog_ended(int slot) { g_prog_ended_n++; g_prog_ended_slot = slot; tr("PAIR prog ended %d", slot); }
+#ifndef WITH_GW
 // gw.c: the gateway's own device (slot VDEV_GW)
 void gw_params(const uint8_t *p, size_t n, uint16_t ia) { tr("GW params %u B ia %04x", (unsigned)n, ia); (void)p; }
 void gw_ia(uint16_t ia) { tr("GW ia %04x", ia); }
 void gw_knx_write(int ko, const uint8_t *v, int n) { tr("GW kw %d %u", ko, n > 0 ? v[n - 1] : 0); }
+uint8_t gw_params_check(const uint8_t *p, size_t n, uint16_t ia, char *why, size_t wn)
+{
+    (void)p; (void)n; (void)ia; (void)wn;
+    why[0] = 0;
+    return 0;
+}
+#else
+// what gw.c calls besides the device server: the binding (pair.c), the link (zlink.c), Berry, GPIO, heap
+static int g_pair_on = -1, g_pair_window = -1, g_pair_open;
+static uint16_t g_pair_lo, g_pair_hi;
+void pair_enable(bool on) { g_pair_on = on; }
+int pair_range(uint16_t lo, uint16_t hi)
+{
+    if (lo > hi) return 1;
+    if (lo == 0 || hi == 0xFFFF) return 2;
+    g_pair_lo = lo; g_pair_hi = hi;
+    return 0;
+}
+void pair_window(int seconds) { g_pair_window = seconds; }
+bool pair_is_open(void) { return g_pair_open; }
+static int g_zl_unavailable;
+int zlink_unavailable(void) { return g_zl_unavailable; }
+int bvm_vm_count(void) { return 2; }
+esp_err_t gpio_config(const gpio_config_t *c) { (void)c; return ESP_OK; }
+esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level) { (void)pin; (void)level; return ESP_OK; }
+int gpio_get_level(gpio_num_t pin) { (void)pin; return 1; }
+size_t heap_caps_get_free_size(uint32_t caps) { (void)caps; return 190000; }
+size_t heap_caps_get_minimum_free_size(uint32_t caps) { (void)caps; return 150000; }
+size_t heap_caps_get_largest_free_block(uint32_t caps) { (void)caps; return 160000; }
+void vTaskDelay(TickType_t t) { (void)t; }
+#endif
+#ifdef WITH_CONSOLE
+// what console.c calls besides the device server and the gateway
+static unsigned long g_leave_n, g_reint_n;
+void app_heap(const char *phase) { (void)phase; }
+void vTaskList(char *buf) { buf[0] = 0; }
+bool zb_tx_power(const int8_t *set, int8_t *now) { (void)set; (void)now; return false; }
+void zb_print(void) {}
+esp_err_t zb_permit_join_as(uint8_t s, bool own) { (void)s; (void)own; return ESP_OK; }
+bool zb_factory_reset(void) { return false; }
+esp_err_t zb_onoff(uint16_t dst, uint8_t ep, int what) { (void)dst; (void)ep; (void)what; return ESP_OK; }
+esp_err_t zb_level(uint16_t dst, uint8_t ep, uint8_t level, uint16_t t) { (void)dst; (void)ep; (void)level; (void)t; return ESP_OK; }
+esp_err_t zb_read(uint16_t dst, uint8_t ep, uint16_t cl, const uint16_t *attrs, int n) { (void)dst; (void)ep; (void)cl; (void)attrs; (void)n; return ESP_OK; }
+esp_err_t zb_leave(uint16_t a, const uint8_t *ieee) { (void)a; (void)ieee; g_leave_n++; return ESP_OK; }
+int zlink_add(int inst, int k, uint16_t addr, uint8_t ep) { (void)inst; (void)k; (void)addr; (void)ep; return 0; }
+void zlink_print(void) {}
+void zlink_poll(int s) { (void)s; }
+bool zlink_reinterview(int inst) { (void)inst; g_reint_n++; return true; }
+void knx_link_print(void) {}
+void knx_link_ack_print(void) {}
+void pair_removed(const uint8_t ieee[8]) { (void)ieee; }
+void pair_print(void) {}
+int devsrv_resize(int n) { return n; }
+void devsrv_print(void) {}
+int bvm_populate(int n) { return n; }
+void bvm_gc(void) {}
+void bvm_set_rate(int pct) { (void)pct; }
+void bvm_print(void) {}
+void bvm_sim_step(void) {}
+esp_err_t esp_console_cmd_register(const esp_console_cmd_t *c) { (void)c; return ESP_OK; }
+esp_err_t esp_console_new_repl_usb_serial_jtag(const esp_console_dev_usb_serial_jtag_config_t *d, const esp_console_repl_config_t *c, esp_console_repl_t **r) { (void)d; (void)c; *r = NULL; return ESP_OK; }
+esp_err_t esp_console_new_repl_uart(const esp_console_dev_uart_config_t *d, const esp_console_repl_config_t *c, esp_console_repl_t **r) { (void)d; (void)c; *r = NULL; return ESP_OK; }
+esp_err_t esp_console_register_help_command(void) { return ESP_OK; }
+esp_err_t esp_console_start_repl(esp_console_repl_t *r) { (void)r; return ESP_OK; }
+#endif
 static int g_zlink_fail;
 static int g_zset_n, g_zset_ep;
-int zlink_set(int inst, int k, uint16_t addr, uint8_t ep) { g_zset_n++; g_zset_ep = ep; tr("ZLINK set %d %d %04x %u", inst, k, addr, ep); return g_zlink_fail ? -1 : 0; }
+// values a class sends at once: when it is linked (its first values), when a group write reaches it (the lamp's
+// status coming back while the device server is still busy)
+static int g_set_values, g_kw_values;
+static void class_values(int inst, int n)
+{
+    for (int i = 0; i < n; i++) {
+        uint8_t v = (uint8_t)i;
+        vdev_ko_out(inst, 2 + i, &v, 1, true, true);
+    }
+}
+int zlink_set(int inst, int k, uint16_t addr, uint8_t ep)
+{
+    g_zset_n++; g_zset_ep = ep;
+    tr("ZLINK set %d %d %04x %u", inst, k, addr, ep);
+    if (!g_zlink_fail) class_values(inst, g_set_values);
+    return g_zlink_fail ? -1 : 0;
+}
+static int g_kw_n, g_kw_ko;
 esp_err_t zlink_knx_write(int inst, int ko, const char *hex)
 {
+    g_kw_n++;
+    g_kw_ko = ko;
     tr("ZLINK kw %d %d %s", inst, ko, hex);
+    class_values(inst, g_kw_values);
     return ESP_OK;
 }
-static int g_tpl_mode;   // 0 none, 1 slot 2, 2 refused
+static int g_tpl_mode;   // 0 none, 1 slot 2, 2 refused, 3 no memory to check it
+static char g_vm[BVM_SLOTS][17];   // the template VMs the harness pretends to run: their digest, by slot
+static unsigned long g_tpl_calls;  // full checks (kgt_open in bvm_template)
 int bvm_template(const uint8_t *seg, size_t n, kgt_info_t *info, char *why, size_t wn)
 {
     volatile uint8_t x = 0;
     for (size_t i = 0; i < n; i++) x ^= seg[i];   // touch all of it: must be readable
     memset(info, 0, sizeof *info);
     why[0] = 0;
+    g_tpl_calls++;
     if (g_tpl_mode == 1) {
         info->params = 10; info->text_len = 100; info->z = 50; info->payload = 200; info->us = 55000;
         strcpy(info->fpr, "91a09904f3083dc6"); strcpy(info->digest, "c35750c2919313d8");
+        strcpy(g_vm[2], info->digest);
         return 2;
     }
     if (g_tpl_mode == 2) { info->err = KNX_ERR_CONFIG; snprintf(why, wn, "refused by the harness"); return BVM_REFUSED; }
+    if (g_tpl_mode == 3) { info->err = KNX_ERR_NO_RAM; snprintf(why, wn, "no memory to check it (harness)"); return BVM_REFUSED; }
     return BVM_NO_TEMPLATE;
+}
+int bvm_slot_of(const char *digest)
+{
+    for (int k = 2; k < BVM_SLOTS; k++) if (g_vm[k][0] && strcmp(g_vm[k], digest) == 0) return k;
+    return -1;
 }
 // The check at LoadCompleted: refuses with g_tchk_err if set, else it finds the template of mode 1 and no
 // template otherwise. Mode 2 passes here on purpose: it is the template that is refused only at the restart.
@@ -333,19 +579,28 @@ int bvm_template_check(const uint8_t *seg, size_t n, size_t free_extra, kgt_info
     return BVM_NO_TEMPLATE;
 }
 size_t bvm_slot_heap(int k) { return k >= 0 ? 30000 : 0; }
-const char *bvm_slot_digest(int k) { return k >= 2 ? "c35750c2919313d8" : ""; }
-// gw.c: what the gateway tells
-static unsigned long g_note_n[7];
+const char *bvm_slot_digest(int k) { return k >= 2 && k < BVM_SLOTS ? g_vm[k] : ""; }
+// gw.c: what the gateway tells (recorded here; with WITH_GW it goes on to the real gw.c)
+static unsigned long g_note_n[16];
 static int g_note_kind;
 static uint8_t g_note_err;
 static uint16_t g_note_ia;
+static char g_note_why[160];
 void gw_note(int kind, uint16_t ia, uint8_t err, const char *why)
 {
-    if (kind >= 1 && kind <= 6) g_note_n[kind]++;
+    if (kind >= 1 && kind < 16) g_note_n[kind]++;
     g_note_kind = kind; g_note_err = err; g_note_ia = ia;
+    snprintf(g_note_why, sizeof g_note_why, "%s", why ? why : "");
     tr("GW note %d %04x %u %s", kind, ia, err, why);
+#ifdef WITH_GW
+    gw_note_real(kind, ia, err, why);
+#endif
 }
-void bvm_keep(uint32_t mask) { tr("BVM keep %x", (unsigned)mask); }
+void bvm_keep(uint32_t mask)
+{
+    tr("BVM keep %x", (unsigned)mask);
+    for (int k = 2; k < BVM_SLOTS; k++) if (!(mask >> k & 1)) g_vm[k][0] = 0;
+}
 static char g_last_params[512];
 static int g_params_n;
 bool bvm_line(int k, const char *fmt, ...)
@@ -440,19 +695,13 @@ static void invariants(const char *where)
     }
 }
 
-// one frame through the same path as on the stick: sink() into the queue, then the body of vdev_task()
+// what waits in the device server's queues, through the body of its task (drain())
 static void pump(void)
 {
-    ev_t e;
-    while (xQueueReceive(s_q, &e, 0) == pdTRUE) {
-        xSemaphoreTake(s_mx, portMAX_DELAY);
-        if (e.type == EV_FRAME) {
-            s_last_rx = g_now;
-            dispatch(&e.f);
-        } else {
-            ko_out(e.ko.inst, e.ko.ko, e.ko.v, e.ko.len, e.ko.initial, e.ko.status);
-        }
-        xSemaphoreGive(s_mx);
+    if (!g_draining) {
+        g_draining = true;
+        drain();
+        g_draining = false;
     }
 }
 
@@ -768,6 +1017,7 @@ static void wipe_ram(void)
     for (int t = 0; t < NDEV; t++) free(s_ts[t].data);   // RAM is gone, the blobs stay
     memset(s_ts, 0, sizeof s_ts);
     memset(s_tref, 0, sizeof s_tref);
+    s_swept = false;   // as at a start: until ts_sweep() every record has been read
     memset(g_seq, 0, sizeof g_seq);
 }
 
@@ -984,7 +1234,7 @@ int main(int argc, char **argv)
             "(%lu with a difference), damaged records taken %lu / refused %lu, allocations failed %lu, invariant failures %lu, "
             "events lost %lu, most segment RAM held %zu B, capability calls that reached a link %d\n",
             steps, g_frames, g_tx_n, g_tx_fail, g_ack_calls, g_log['I'], g_log['W'], g_log['E'], g_reboots, g_reboot_diff,
-            g_corrupt_ok, g_corrupt_refused, g_alloc_failed, g_inv_fail, (unsigned long)s_ev_lost, max_pinned,
+            g_corrupt_ok, g_corrupt_refused, g_alloc_failed, g_inv_fail, (unsigned long)(s_ev_lost + s_kv_lost), max_pinned,
             g_sleepy_calls);
     printf("HASH %016llx\n", (unsigned long long)g_hash);
     return g_inv_fail ? 2 : 0;

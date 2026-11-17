@@ -9,7 +9,10 @@
 // Availability: every link follows whether its device is there (avail.h has the rules). A change
 // goes to the class as dp_event "availability" on channel 0 (true/false), as Zigbee2MQTT's availability, and to the
 // gateway's message object ("15.15.2 OFF", "15.15.2 ON"); while a device is off the gateway's fault object is 1.
-// A device that comes back is read back and gets its binding and reporting again (a light re-interview).
+// A device that comes back is read back, gets its binding and reporting again (a light re-interview), and its class
+// gets its parameters again (zlink_params_due): what the class writes into the device did not reach it while it was
+// off. After a start the bus does not know any more what it was told: the first state of each instance goes on the
+// bus as a change, one instance after the other (tell_next), not only into the value KNX reads.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,21 +53,31 @@ typedef struct {
     uint32_t n_off, n_on;    // how often it went off and came back
     bool kept_off;           // a link taken down to come back (zlink_pause): its device was off then. Read while
                              // the slot is not in use; inst and addr still say whose it was.
+    int64_t params_at;       // its device answers again: the class gets its parameters at this time, 0: nothing due
 } zlink_t;
 
 static zlink_t s_l[NLINK];
-static esp_timer_handle_t s_poll, s_tick;
+static esp_timer_handle_t s_poll, s_tick, s_tell;
 static int s_poll_s;
 #define TICK_US 10000000   // availability is decided at least this often
+// The first state of each instance after the start goes on the bus one instance after the other: 32 devices that
+// answer within the same second are spread over 10 s.
+#define TELL_GAP_US 300000
+// A device that answers again gets its parameters after its binding and reporting (3 s + 2 s per link, EV_SETUP).
+#define PARAMS_US   4000000
+// Per instance (FIRST_INST + n): its availability went to the class as a change since the start. Kept while a link is
+// only taken down to come back (zlink_pause), cleared when the instance goes (zlink_del).
+static bool s_told[NLINK];
 
-// TICK: all links, NUDGE: the link idx; DISC_*: the full interview of the device at addr
-enum { EV_DP, EV_READBACK, EV_SETUP, EV_TICK, EV_NUDGE, EV_DISC_START, EV_DISC_NODE, EV_DISC_EPS, EV_DISC_DESC };
+// TICK: all links, NUDGE: the link idx, TELL: the next held first state; DISC_*: the full interview of the device at addr
+enum { EV_DP, EV_READBACK, EV_SETUP, EV_TICK, EV_NUDGE, EV_TELL, EV_DISC_START, EV_DISC_NODE, EV_DISC_EPS,
+       EV_DISC_DESC };
 typedef struct {
     uint8_t type, idx, ch;
     bool initial;
     uint16_t addr;     // DISC_*: the device; DISC_EPS: ch = number of endpoints in value, idx != 0: error
     int16_t err;
-    char key[24];
+    char key[32];
     char value[200];   // JSON literal; DISC_EPS: the endpoints; DISC_DESC: an ep_desc_t
 } lev_t;
 _Static_assert(sizeof(ep_desc_t) <= 200, "an endpoint descriptor fits into an event");
@@ -92,6 +105,79 @@ static zlink_t *by_addr(uint16_t addr)
         }
     }
     return NULL;
+}
+
+// Whether the bus was told the availability of this instance since the start. NULL: an instance outside the
+// device server's range (console tests); those are never held back.
+static bool *told_of(int inst)
+{
+    return inst >= FIRST_INST && inst < FIRST_INST + NLINK ? &s_told[inst - FIRST_INST] : NULL;
+}
+
+static bool to_tell(const zlink_t *l)   // under the lock: its first state is known and waits for its turn
+{
+    const bool *t = l->used ? told_of(l->inst) : NULL;
+    return t && !*t && l->av.state != AV_UNKNOWN;
+}
+
+// Basic ModelIdentifier and SWBuildID, read together wherever the model is read: a class may tell firmware versions of
+// one model apart (zlink_attr_ep)
+static const uint16_t IDENT[] = {0x0005, 0x4000};
+
+#define STR_LIT_MAX 136   // a string literal in a dp_event line of 240 octets (bvm.c), quotes included
+
+// A ZCL character string (length octet first, 0xFF: no value) as a JSON string literal, read as UTF-8 the way
+// Zigbee2MQTT reads it (Node's Buffer.toString): every maximal ill-formed subsequence becomes U+FFFD. Valid
+// characters from U+0080 go into the line as their UTF-8 octets, U+FFFD as EF BF BD: Berry's json.load keeps such
+// octets as they are, whereas its \u decoder encodes U+007F and U+07FF overlong and knows no surrogate pairs. Control
+// characters, '"' and '\' are escaped. At most `max` octets of the string are read; the literal stops before it would
+// grow beyond STR_LIT_MAX characters. Returns its length.
+static int zcl_str_json(const uint8_t *p, int max, char *out)
+{
+    int n = p[0] == 0xff ? 0 : p[0] > max ? max : p[0];
+    const uint8_t *s = p + 1;
+    int o = 0;
+    out[o++] = '"';
+    for (int i = 0; i < n;) {
+        uint8_t b = s[i];
+        char c[8];
+        int cl = 0, used = 1;
+        if (b < 0x80) {
+            if (b < 0x20 || b == '"' || b == '\\') {
+                cl = snprintf(c, sizeof c, "\\u%04x", b);
+            } else {
+                c[cl++] = (char)b;
+            }
+        } else {
+            // the octets that may follow this lead octet (Unicode 15, table 3-7), and how many
+            int need = b >= 0xC2 && b <= 0xDF ? 1 : b >= 0xE0 && b <= 0xEF ? 2 : b >= 0xF0 && b <= 0xF4 ? 3 : 0;
+            uint8_t lo = b == 0xE0 ? 0xA0 : b == 0xF0 ? 0x90 : 0x80;
+            uint8_t hi = b == 0xED ? 0x9F : b == 0xF4 ? 0x8F : 0xBF;
+            int k = 0;
+            while (k < need && i + 1 + k < n && s[i + 1 + k] >= lo && s[i + 1 + k] <= hi) {
+                lo = 0x80;
+                hi = 0xBF;
+                k++;
+            }
+            used = 1 + k;
+            if (need && k == need) {
+                memcpy(c, s + i, (size_t)used);
+                cl = used;
+            } else {   // the lead and the continuation octets that fitted: one U+FFFD; the next octet starts anew
+                memcpy(c, "\xEF\xBF\xBD", 3);
+                cl = 3;
+            }
+        }
+        if (o + cl + 1 > STR_LIT_MAX) {
+            break;
+        }
+        memcpy(out + o, c, (size_t)cl);
+        o += cl;
+        i += used;
+    }
+    out[o++] = '"';
+    out[o] = 0;
+    return o;
 }
 
 // Value of "name" in the flat JSON object the prelude's _emit writes: a string without its quotes, or the literal of
@@ -359,7 +445,8 @@ bool zlink_cmd(uint16_t addr, uint16_t cluster, uint8_t cmd, const uint8_t *payl
     return true;
 }
 
-void zlink_attr(uint16_t addr, uint16_t cluster, uint16_t attr, uint8_t type, const void *val)
+// ep: the endpoint the value came from, 0: not known (the link's endpoint stands for it)
+void zlink_attr_ep(uint16_t addr, uint8_t ep, uint16_t cluster, uint16_t attr, uint8_t type, const void *val)
 {
     zlink_t *l = by_addr(addr);
     const uint8_t *p = val;
@@ -372,19 +459,18 @@ void zlink_attr(uint16_t addr, uint16_t cluster, uint16_t attr, uint8_t type, co
         ev.ch = 0;
         bit = INI_MODEL;
         strcpy(ev.key, "zigbeeModel");
-        int len = p[0] == 0xff ? 0 : p[0] > 32 ? 32 : p[0];
-        char *o = ev.value;
-        *o++ = '"';
-        for (int i = 0; i < len; i++) {   // as JSON; IKEA has models with a control character in front
-            uint8_t ch = p[1 + i];
-            if (ch < 0x20 || ch == '"' || ch == '\\' || ch >= 0x7f) {
-                o += sprintf(o, "\\u%04x", ch);
-            } else {
-                *o++ = (char)ch;
-            }
+        zcl_str_json(p, 32, ev.value);   // IKEA has models with a control character in front
+    } else if (cluster == 0x0000 && attr == 0x4000 && type == 0x42) {
+        // SWBuildID: the device's firmware version, for classes whose devices changed what they report with it.
+        // Fixed while linked: always initial.
+        ev.ch = 0;
+        strcpy(ev.key, "swBuildId");
+        zcl_str_json(p, 32, ev.value);
+        ev.initial = true;
+        if (xQueueSend(s_q, &ev, 0) != pdTRUE) {
+            ESP_LOGW(TAG, "queue full, %s from 0x%04x dropped", ev.key, addr);
         }
-        *o++ = '"';
-        *o = 0;
+        return;
     } else if (cluster == 0x0006 && attr == 0x0000 && type == 0x10) {
         bit = INI_STATE;
         strcpy(ev.key, "state");
@@ -418,10 +504,16 @@ void zlink_attr(uint16_t addr, uint16_t cluster, uint16_t attr, uint8_t type, co
         }
         return;
     } else if (cluster == 0x0001 && attr == 0x0021 && type == 0x20) {
-        // BatteryPercentageRemaining in half percent; Zigbee2MQTT "battery" in percent. Not an initial value: a
-        // battery device answers a read when it is awake, and its status object may go out then.
-        strcpy(ev.key, "battery");
-        snprintf(ev.value, sizeof ev.value, "%u", p[0] == 0xff ? 0u : (unsigned)(p[0] + 1) / 2);
+        // BatteryPercentageRemaining as the device sends it, 0..200 in half percent by the ZCL; some firmware sends
+        // whole percent, so the class decides (with swBuildId). On the endpoint it came from. 0xFF: not known, nothing
+        // to tell. Not an initial value: a battery device answers a read when it is awake, and its status object may
+        // go out then.
+        if (p[0] == 0xff) {
+            return;
+        }
+        ev.ch = ep ? ep : l->ep;
+        strcpy(ev.key, "batteryPercentageRemaining");
+        snprintf(ev.value, sizeof ev.value, "%u", p[0]);
     } else if (cluster == 0x0300 && (attr == 0x400B || attr == 0x400C) && type == 0x21) {
         // the range the lamp can do; the class prefers it to its model table. Fixed values: always initial.
         strcpy(ev.key, attr == 0x400B ? "colorTempPhysicalMin" : "colorTempPhysicalMax");
@@ -441,12 +533,18 @@ void zlink_attr(uint16_t addr, uint16_t cluster, uint16_t attr, uint8_t type, co
     }
 }
 
+void zlink_attr(uint16_t addr, uint16_t cluster, uint16_t attr, uint8_t type, const void *val)
+{
+    zlink_attr_ep(addr, 0, cluster, attr, type, val);
+}
+
 // ---------------------------------------------------------------- availability (avail.h)
 typedef struct {
     int idx, inst, k;
     uint16_t addr;
     uint8_t ep, from, to;
     bool ping;
+    bool hold;            // the first state since the start: the class gets it at its turn (tell_next)
     uint32_t fails;
     int64_t quiet_s;
 } av_act_t;
@@ -458,6 +556,7 @@ static void avail_run(int only)
     static av_act_t act[NLINK];   // the link task's own: one call at a time
     static const uint16_t zv[] = {0x0000};   // Basic ZCLVersion: every device has it
     int n = 0;
+    bool tell = false;
     int64_t now = esp_timer_get_time();
     xSemaphoreTake(s_mx, portMAX_DELAY);
     for (int i = 0; i < NLINK; i++) {
@@ -474,17 +573,32 @@ static void avail_run(int only)
             ping = false;
         }
         if (to != from || ping) {
+            // The first state of an instance the bus has not been told since the start waits for its turn. Any
+            // later change goes to the class at once and counts as told.
+            bool *t = told_of(l->inst);
+            bool hold = to != from && from == AV_UNKNOWN && t && !*t;
+            if (to != from && !hold && t) {
+                *t = true;
+            }
             act[n++] = (av_act_t){.idx = i, .inst = l->inst, .k = l->k, .addr = l->addr, .ep = l->ep, .from = from,
-                                  .to = to, .ping = ping, .fails = l->fail_n - l->av.fail_base,
+                                  .to = to, .ping = ping, .hold = hold, .fails = l->fail_n - l->av.fail_base,
                                   .quiet_s = (now - l->av.last_us) / 1000000};
             if (to != from && to == AV_OFF) {
                 l->n_off++;
+                l->params_at = 0;   // nothing to write into a device that does not answer
             } else if (to != from && from == AV_OFF) {
                 l->n_on++;
+                l->params_at = now + PARAMS_US + (int64_t)i * 2000000;   // after its binding and reporting
             }
         }
     }
+    for (int i = 0; i < NLINK && !tell; i++) {
+        tell = to_tell(&s_l[i]);
+    }
     xSemaphoreGive(s_mx);
+    if (tell) {
+        esp_timer_start_once(s_tell, TELL_GAP_US);   // running already: it fires anyway, and tell_next() goes on
+    }
     for (int j = 0; j < n; j++) {
         const av_act_t *a = &act[j];
         if (a->ping) {
@@ -503,8 +617,9 @@ static void avail_run(int only)
             ESP_LOGW(TAG, "inst %d <-> 0x%04x: NOT reachable (%lu failed sends, nothing heard for %lld s)", a->inst,
                      a->addr, (unsigned long)a->fails, (long long)a->quiet_s);
         }
-        // to the class, as Zigbee2MQTT's availability; the first "true" after linking is the initial value
-        if (a->k >= 0) {
+        // to the class, as Zigbee2MQTT's availability; the first "true" after linking again (the bus was told since
+        // the start) is the initial value
+        if (a->k >= 0 && !a->hold) {
             bvm_line(a->k, "{\"call\":\"dp_event\",\"inst\":%d,\"id\":%lu,\"ch\":0,\"key\":\"availability\","
                      "\"value\":%s,\"initial\":%s}", a->inst, bvm_next_id(), on ? "true" : "false",
                      on && first ? "true" : "false");
@@ -539,6 +654,75 @@ static void tick_fire(void *arg)
     if (s_q) {
         xQueueSend(s_q, &ev, 0);
     }
+}
+
+static void tell_fire(void *arg)
+{
+    (void)arg;
+    lev_t ev = {.type = EV_TELL};
+    if (s_q) {
+        xQueueSend(s_q, &ev, 0);   // full: the next tick arms the timer again
+    }
+}
+
+// The first state of one instance since the start, held back by avail_run(), goes to the class as a change: the
+// status object goes on the bus, also when it is the "1" a lamp that answers brings. Before a restart the bus may have
+// been told "0" (and a visualisation would show "not reachable" until the lamp failed once more). The next instance
+// follows TELL_GAP_US later.
+static void tell_next(void)
+{
+    int k = -1, inst = 0;
+    bool on = false, more = false;
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    for (int i = 0; i < NLINK; i++) {
+        zlink_t *l = &s_l[i];
+        if (!to_tell(l)) {
+            continue;
+        }
+        if (k >= 0) {
+            more = true;
+            break;
+        }
+        *told_of(l->inst) = true;
+        k = l->k;
+        inst = l->inst;
+        on = l->av.state == AV_ON;
+    }
+    xSemaphoreGive(s_mx);
+    if (k >= 0) {
+        ESP_LOGI(TAG, "inst %d: %s, the first state since the start goes on the bus", inst,
+                 on ? "reachable" : "NOT reachable");
+        bvm_line(k, "{\"call\":\"dp_event\",\"inst\":%d,\"id\":%lu,\"ch\":0,\"key\":\"availability\",\"value\":%s,"
+                 "\"initial\":false}", inst, bvm_next_id(), on ? "true" : "false");
+    }
+    if (more) {
+        esp_timer_start_once(s_tell, TELL_GAP_US);
+    }
+}
+
+// From the device server, which hands the class its parameters when this says so: once per return of the device
+// ("answers again"), PARAMS_US plus 2 s per link after it, so that lamps of one circuit do not all write at once.
+bool zlink_params_due(int inst)
+{
+    const zlink_t *c = by_inst(inst);   // a first look without the lock, as zlink_is_off(): nearly always nothing
+    if (!s_mx || !c || !c->params_at) {
+        return false;
+    }
+    bool due = false;
+    uint16_t addr = 0;
+    int64_t now = esp_timer_get_time();
+    xSemaphoreTake(s_mx, portMAX_DELAY);
+    zlink_t *l = by_inst(inst);
+    if (l && l->params_at && now >= l->params_at) {
+        l->params_at = 0;
+        addr = l->addr;
+        due = true;
+    }
+    xSemaphoreGive(s_mx);
+    if (due) {
+        ESP_LOGI(TAG, "inst %d <-> 0x%04x: answers again, its class gets its parameters again", inst, addr);
+    }
+    return due;
 }
 
 // called in the Zigbee task: a frame came from this short address (ZCL, device announce)
@@ -848,6 +1032,10 @@ static void link_task(void *arg)
     lev_t ev;
     for (;;) {
         xQueueReceive(s_q, &ev, portMAX_DELAY);
+        if (ev.type == EV_TELL) {
+            tell_next();
+            continue;
+        }
         if (ev.type == EV_TICK || ev.type == EV_NUDGE) {
             avail_run(ev.type == EV_NUDGE ? ev.idx : -1);
             if (s_disc.busy && esp_timer_get_time() > s_disc.deadline) {
@@ -912,17 +1100,19 @@ void zlink_start(void)   // once, before the first link
 {
     s_mx = xSemaphoreCreateMutex();
     s_q = xQueueCreate(12, sizeof(lev_t));   // 12, not 8: a colour lamp answers with 7 values at once
+    const esp_timer_create_args_t tt = {.callback = tell_fire, .name = "zlink_tell"};
+    ESP_ERROR_CHECK(esp_timer_create(&tt, &s_tell));
     xTaskCreate(link_task, "link", 4096, NULL, 4, NULL);
     const esp_timer_create_args_t t = {.callback = tick_fire, .name = "zlink_avail"};
     ESP_ERROR_CHECK(esp_timer_create(&t, &s_tick));
     esp_timer_start_periodic(s_tick, TICK_US);
 }
 
-// Ask the device everything once more, as after linking: model, state, binding and reporting. What comes back is no
-// initial value (except the model): a status that differs from what KNX was told goes on the bus.
+// Ask the device everything once more, as after linking: model, state, binding and reporting, and its class writes
+// its parameters into it again (a device reset by hand lost them). What comes back is no initial value (except the
+// model): a status that differs from what KNX was told goes on the bus.
 bool zlink_reinterview(int inst)
 {
-    static const uint16_t model[] = {0x0005};
     if (!s_mx) {
         return false;
     }
@@ -930,13 +1120,14 @@ bool zlink_reinterview(int inst)
     zlink_t *l = by_inst(inst);
     if (l) {
         l->initial |= INI_MODEL;
-        l->reads += (zb_read(l->addr, l->ep, 0x0000, model, 1) == ESP_OK);
+        l->reads += (zb_read(l->addr, l->ep, 0x0000, IDENT, 2) == ESP_OK);
         readback(l, 0);
         l->su_try = 0;
         esp_timer_stop(l->su);
         esp_timer_start_once(l->su, 3000000);
-        ESP_LOGI(TAG, "inst %d <-> 0x%04x: re-interview (endpoints, model, state, binding and reporting)", l->inst,
-                 l->addr);
+        l->params_at = esp_timer_get_time() + PARAMS_US;
+        ESP_LOGI(TAG, "inst %d <-> 0x%04x: re-interview (endpoints, model, state, binding and reporting, parameters)",
+                 l->inst, l->addr);
     }
     uint16_t addr = l ? l->addr : 0;
     xSemaphoreGive(s_mx);
@@ -950,10 +1141,9 @@ static void first_reads(zlink_t *l)
 {
     // Colour temperature and the range the lamp can do, colour (x, y, mode) and what colour it can do at all: a light
     // without colour control answers "unsupported"
-    static const uint16_t model[] = {0x0005}, a0[] = {0x0000},
-                          ct[] = {0x0007, 0x400B, 0x400C, 0x0003, 0x0004, 0x0008, 0x400A};
+    static const uint16_t a0[] = {0x0000}, ct[] = {0x0007, 0x400B, 0x400C, 0x0003, 0x0004, 0x0008, 0x400A};
     l->initial = INI_ALL;
-    zb_read(l->addr, l->ep, 0x0000, model, 1);
+    zb_read(l->addr, l->ep, 0x0000, IDENT, 2);
     zb_read(l->addr, l->ep, 0x0006, a0, 1);
     zb_read(l->addr, l->ep, 0x0008, a0, 1);
     zb_read(l->addr, l->ep, 0x0300, ct, 7);
@@ -1026,13 +1216,17 @@ static int add(int inst, int k, uint16_t addr, uint8_t ep)
     l->heard_n = l->fail_n = 0;
     l->n_off = l->n_on = 0;
     l->nudged = l->gone = false;
+    l->params_at = 0;   // linking hands the class its parameters (vdev.c, apply)
     av_init(&l->av, esp_timer_get_time(), false, 0, 0);   // vdev.c says right after linking whether it sleeps
     if (was_off) {
         l->av.state = AV_OFF;
     }
     l->used = true;
     defaults(inst, k);
-    if (was_off) {   // the class has an object for it and no value yet: the value as it stands, not a change
+    const bool *t = told_of(inst);
+    if (was_off && t && !*t) {   // the bus has not heard it since the start: "false" goes there at its turn
+        esp_timer_start_once(s_tell, TELL_GAP_US);
+    } else if (was_off) {   // the class has an object for it and no value yet: the value as it stands, not a change
         bvm_line(k, "{\"call\":\"dp_event\",\"inst\":%d,\"id\":%lu,\"ch\":0,\"key\":\"availability\",\"value\":false,"
                  "\"initial\":true}", inst, bvm_next_id());
     }
@@ -1091,7 +1285,9 @@ int zlink_set(int inst, int k, uint16_t addr, uint8_t ep)
         l->trans = 0;
         l->reads += 3;
         defaults(inst, k);
-        if (moved && l->av.state != AV_UNKNOWN) {   // the instance is new to this VM: what is known goes with it
+        // The instance is new to this VM: what is known goes with it. Unless the bus has not heard it since the
+        // start: then tell_next() brings it to this VM as a change.
+        if (moved && l->av.state != AV_UNKNOWN && !to_tell(l)) {
             bvm_line(k, "{\"call\":\"dp_event\",\"inst\":%d,\"id\":%lu,\"ch\":0,\"key\":\"availability\",\"value\":%s,"
                      "\"initial\":true}", inst, bvm_next_id(), l->av.state == AV_ON ? "true" : "false");
         }
@@ -1117,8 +1313,13 @@ static void take_down(int inst, bool keep)   // keep: it comes back for the same
         esp_timer_stop(l->rb);
         esp_timer_stop(l->su);
         l->kept_off = keep && l->av.state == AV_OFF;
+        l->params_at = 0;
         l->used = false;   // first: values still on their way find no link any more
         bvm_line(l->k, "{\"call\":\"forget\",\"inst\":%d,\"id\":%lu}", inst, bvm_next_id());
+    }
+    bool *t = told_of(inst);
+    if (t && !keep) {   // the instance goes: whatever device it gets next, the bus has not heard of that one
+        *t = false;
     }
     xSemaphoreGive(s_mx);
 }
@@ -1158,11 +1359,10 @@ void zlink_announced(int inst)
 
 void zlink_reread(int inst)   // ask the device for its model again (it did not answer the first time)
 {
-    static const uint16_t model[] = {0x0005};
     zlink_t *l = by_inst(inst);
     if (l) {
         l->initial |= INI_MODEL;
-        l->reads += (zb_read(l->addr, l->ep, 0x0000, model, 1) == ESP_OK);
+        l->reads += (zb_read(l->addr, l->ep, 0x0000, IDENT, 2) == ESP_OK);
     }
 }
 

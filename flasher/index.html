@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>zigbee2knx — web installer</title>
+<meta name="description" content="Install the zigbee2knx firmware from the browser: Zigbee devices as KNX devices, set up in ETS.">
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<style>
+  :root{color-scheme:light dark}
+  body{font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:46rem;margin:0 auto;
+       padding:1.5rem 1.2rem 3rem}
+  h1{font-size:1.6rem;margin:.4rem 0 .2rem}
+  .sub{opacity:.75;margin:0 0 1.6rem}
+  .card{border:1px solid #8884;border-left:4px solid #2e8b3d;border-radius:10px;padding:1rem 1.2rem;margin:1.4rem 0}
+  .n{opacity:.7}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#8881;padding:.1em .35em;border-radius:3px}
+  a{color:inherit}
+</style>
+</head>
+<body>
+<h1>zigbee2knx</h1>
+<p class="sub">Zigbee devices as KNX devices, with one gateway that is the Zigbee coordinator itself.</p>
+
+<div class="card">
+  <p><strong>Install from the browser.</strong> Chrome, Edge or Opera on a PC. Plug the gateway (TUL32, ESP32-C6
+  with an NCN5130) into USB and press the button.</p>
+  <p><esp-web-install-button manifest="manifest.json">
+    <button slot="activate" type="button">Install zigbee2knx @VERSION@</button>
+    <span slot="unsupported">This browser cannot flash from a web page; use Chrome, Edge or Opera on a PC.</span>
+    <span slot="not-allowed">Flashing needs a page served over HTTPS.</span>
+  </esp-web-install-button></p>
+  <p class="n">First installation: let the installer <strong>erase</strong> the device. An update: do
+  <strong>not</strong> erase; then the Zigbee network and the KNX devices stay and need not be paired again.</p>
+</div>
+
+<p>The TULX32 has no USB port for this; it installs firmware from its own recovery system.</p>
+<p>Product files, getting started, the source and the licence (GPL-3.0):
+<a href="https://github.com/tostmann/zigbee2knx">github.com/tostmann/zigbee2knx</a>.</p>
+</body>
+</html>

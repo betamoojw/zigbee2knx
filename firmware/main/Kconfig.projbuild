@@ -7,4 +7,11 @@ config Z2K_BOARD_TULX32
         Builds for the TULX32 (main/board.h): records and templates in actor_db, Zigbee in the shared nvs, which
         this firmware then never erases. Set by sdkconfig.tulx.
 
+config Z2K_TRUST_DEV_KEY
+    bool "Also trust the development key for embedded templates"
+    default n
+    help
+        Templates signed with the development key (fingerprint 91a09904f3083dc6) load as well as those signed with
+        the release key. For development builds only; the project's firmware images are built without it.
+
 endmenu

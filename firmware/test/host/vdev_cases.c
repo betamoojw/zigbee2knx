@@ -49,9 +49,12 @@ static void fresh(void)
 {
     wipe_ram();
     for (int k = 0; k < NKEY; k++) { free(g_nvs[k].b); g_nvs[k].b = NULL; }
+    s_swept = true;    // no record left: none to wait for
+    g_nvs_cap = 0;
     g_nvs_fail = g_zlink_fail = 0;
     g_txfail_pct = 0;
     g_tpl_mode = 0;
+    memset(g_vm, 0, sizeof g_vm);
     g_tchk_err = 0;
     s_test_refuse = 0;
     s_saves = 0;
@@ -67,7 +70,7 @@ static void case_a(void)
         vdev_set_ia(n, (uint16_t)(0xFF01 + n));
     }
     tick_for(2000000);
-    say("8 fresh devices: segment RAM %zu B, records in NVS %zu B", pinned(), nvs_bytes());
+    say("%d fresh devices: segment RAM %zu B, records in NVS %zu B", VDEV_MAX, pinned(), nvs_bytes());
     unsigned long f0 = g_frames;
     for (int i = 0; i < VDEV_MAX; i++) {
         for (int o = 1; o <= 5; o++) {

@@ -44,7 +44,7 @@ var Z = zb_switch
 if ko == Z.KO_SWITCH && raw.size() == 1
 host.dp_set(Z.EP, 'state', (raw[0] & 1) != 0 ? 'ON' : 'OFF')
 elif ko == Z.KO_IDENTIFY && raw.size() == 1
-if (raw[0] & 1) != 0 && Z.has(Z.F_IDENTIFY) host.dp_set(Z.EP, 'identify', 'identify') end
+if Z.has(Z.F_IDENTIFY) host.dp_set(Z.EP, 'identify', 'identify') end
 else
 host.log('ko_write_ignored', {'ko': ko, 'value': raw.tohex()})
 end

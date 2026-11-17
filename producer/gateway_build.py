@@ -9,7 +9,9 @@ earlier version instead of having it deleted and added again (ETS 6.4.1 offered 
 device of the new version had been inserted into the project; whether ReplacesVersions is needed for that is not
 tested). The knxprod is then built with OpenKNXproducer create on a Windows PC with ETS.
 An output that holds the same application number and version with other content is not overwritten
-(--overwrite-version: only for a version never given out).
+(--overwrite-version: only for a version never given out). Whatever the switch, nothing is written that does not fit
+the versions given out (producer/issued.json): knx.application.replaces has to name every lower version given out,
+and a version given out is never written again with other content, nor its ids with another meaning.
 
 Default output: producer/zigbee-gateway.xml, written atomically.
 """
@@ -62,9 +64,12 @@ def main():
     head = "edit the manifest, not this file.\n"
     if head in xml:
         xml = xml.replace(head, head + note, 1)
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from knxprod_gen import issued_problems, version_clash
+    problems = issued_problems(xml)
+    if problems:
+        sys.exit("gateway_build: against the versions given out (producer/issued.json): " + "; ".join(problems))
     if os.path.exists(a.out) and not a.overwrite_version:
-        sys.path.insert(0, os.path.join(ROOT, "tools"))
-        from knxprod_gen import version_clash
         clash = version_clash(open(a.out, encoding="utf-8").read(), xml)
         if clash:
             sys.exit(f"gateway_build: {a.out}: {clash}")

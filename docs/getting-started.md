@@ -9,7 +9,8 @@ differently.
 
 The gateway and its Zigbee devices share one KNX line. Each Zigbee device is a virtual KNX device with an individual
 address in a range of device numbers you choose in the gateway's parameters; the gateway acknowledges the frames for
-all of them. Up to 32 Zigbee devices fit into one gateway.
+all of them. Up to 32 Zigbee devices fit into one gateway. The KNX serial number of a virtual device is derived from
+its Zigbee device's IEEE address (a hash of it), so it stays with the Zigbee device.
 
 ## The gateway
 
@@ -22,6 +23,7 @@ switches the gateway's programming mode, the LED is on while it is.
 | Addresses for Zigbee devices in this line: first device number | 1 |
 | Addresses for Zigbee devices in this line: last device number | 48 |
 | Pairing window for the object and the button (s) | 180 |
+| Long frames for downloads | Long frames, 55 octets |
 
 | No. | Object | DPT | |
 |---|---|---|---|
@@ -39,7 +41,8 @@ switches the gateway's programming mode, the LED is on while it is.
 Codes of the last message: `OFF` the Zigbee device does not answer, `ON` it answers again, `MODEL` its model is not
 in the class's list (it runs with the class defaults), `DEL` the device was removed, `FULL` refused for want of a
 place, `RAM`, `CRC`, `CONF`, `SW`, `LOAD` a download the gateway could not take (ETS then reports the download as
-failed).
+failed), `FLASH` a record does not get into the flash, `DUP` an individual address another of the gateway's devices
+already has was refused, `GA` more group addresses than the gateway can acknowledge.
 
 ## Pairing a Zigbee device
 
@@ -83,24 +86,23 @@ parameter to its default.
 
 ## Download times
 
-The virtual devices announce standard frames (12 data octets per memory write). A full download of a white spectrum
-light took about 85 s with ETS 6.4.1. The firmware can take long frames (45 s for the same download), but does not
-announce them yet: a line coupler only has to pass frames of up to 55 octets, and that case is not tested.
+The gateway parameter "Long frames for downloads" sets what all virtual devices announce to ETS: standard frames
+(12 data octets per memory write), long frames of 55 octets (the default; every TP1 line coupler has to pass them) or
+of 66 octets. A full download of a white spectrum light took about 85 s with standard frames and 45 s with 66 octets
+(ETS 6.4.1, through a KNXnet/IP tunnel, no coupler); 55 octets has not been timed. Downloads through a line coupler or
+a USB interface with long frames have not been tested yet; if one fails, set the parameter to standard frames.
 
 ## Known limitations
 
-- Parameters are not sent again to a Zigbee device that had no power during the download: download again once it is
-  on.
-- After a restart of the gateway, "Zigbee device reachable" can stay at 0 for a device that was unreachable before,
-  and a fault that is present at the start is sent only when it changes.
-- Relative dimming (DPT 3.007) ignores the step size: every step dims until a stop telegram or the end of the range.
-- "Identify" reacts to the value 1 only.
-- TULX32: a second change of a device's class fails until the gateway restarts, and the bus current with Zigbee
-  running has not been measured.
-- The remote class (0xC004) has not run with ETS. A battery device that joined through the pairing window can be
-  removed when ETS asks for an address before the device has woken up.
+- TULX32: the bus current with Zigbee running has not been measured.
+- The remote class (0xC004) has not run with ETS.
+- Relative colour temperature with step code 1 moves until a stop telegram and is not held within the parameterized
+  colour temperature range; the other step codes are.
 - A device that was asked to leave knows the network key and can join again while the network is open; install
   codes are not supported.
+- There is no backup function yet. The Zigbee network (its key and the joined devices) and the KNX devices live in the
+  gateway's flash; the only backup today is a copy of the whole flash over USB (`esptool read-flash`). Restoring such a
+  copy, and moving a network to another gateway, have not been tested.
 
 ## Console
 

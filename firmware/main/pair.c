@@ -8,7 +8,8 @@
 // series. Seen from here:
 //
 //   1. The target lies in the range of this gateway and two reads followed: open the Zigbee network once, for three
-//      minutes at most. ETS giving up (no read for 7 s) closes it.
+//      minutes at most. ETS giving up (no read for 7 s) closes it. A second source that asks meanwhile (another ETS)
+//      keeps its question as long as its reads go on, and is served when the first series is through.
 //   2. The first device that joins and passes the key exchange becomes a virtual KNX device in programming mode and
 //      answers the next read. The network closes at once. Whatever else joins in that window is asked to leave.
 //      "Joins" is the trust centre's Device_Update "joined", not the device's announce: on 2026-11-15 a lamp joined
@@ -16,7 +17,8 @@
 //   3. ETS writes the address; the device identifies itself, so one sees which one it was. The series ends there,
 //      and programming mode ends with it even if ETS never restarts the device.
 //   4. A device without an address that is already waiting (ETS gave up before, or a restart) is taken first,
-//      but only if it still answers; a silent one is removed and the network opens.
+//      but only if it still answers; a silent one is removed and the network opens. A sleepy one (its announce said
+//      receiver off when idle: a remote) cannot answer while it sleeps and is taken without the question.
 //   5. The target is the address of one of our devices: that device goes into programming mode for the series,
 //      which is how ETS programs a device again that has its address already.
 //   6. Any opening of the network this firmware did not ask for is closed again, unless a series or the pairing
@@ -35,8 +37,12 @@
 //      then it is not a device that waits for an address, and a restart in between does not make it one.
 //  10. Whoever is asked to leave, because its virtual device went or because it joined where it was not wanted, is
 //      remembered by its IEEE address until it is seen leaving. A device that was switched off then is still a member
-//      when it comes back: its announce or its rejoin gets it the request again. A new join ends that as well: then
-//      it is a device like any other.
+//      when it comes back: its announce or its rejoin gets it the request again, and so does any frame it sends from
+//      the short address it was asked at (a lamp the request did not reach goes on reporting). A new join ends that as
+//      well: then it is a device like any other.
+//  11. One of our devices that joins anew (Device_Update "joined", not a rejoin) was reset by hand: it stays with its
+//      virtual device and is set up again (binding, reporting, its parameters). It does not become the new device
+//      an open network waits for.
 //
 // The read is not addressed to us: every address assignment on the line looks the same. The range is what ties it to
 // this gateway; without a target inside it nothing opens. ETS does not say which product it is about to load, so the
@@ -110,10 +116,24 @@ static bool s_nvs_ok, s_enabled = true;
 static uint16_t s_lo = 0xFF01, s_hi = 0xFF30;   // default 15.15.1 .. 15.15.48; gw.c or the console sets another range
 static atomic_uint s_dropped;
 
-// the question ETS asked last, and the series that grew out of it
-static uint16_t s_probe_src, s_probe_dst, s_src, s_target;
-static int s_probe_own = -1, s_own = -1;
-static int64_t s_probe_t, s_poll_last, s_note_t;
+// The last question of every source that asks (an ETS, through whichever interface): the address it asked for, and
+// whether its reads follow it. A question counts when its first read comes within PROBE_VALID_US, and from then on as
+// long as its source keeps reading with gaps of POLL_GAP_US at most. While one source's series runs, another one's
+// question stays good this way, and that source is served when the first is through. A question starts one series.
+#define SRC_MAX 4
+typedef struct {
+    uint16_t src, dst;
+    int8_t own;          // our device at dst, -1: none
+    bool used, live;     // live: its reads follow it
+    bool spent;          // it started a series, or it was found to be none of ours
+    int64_t t, last;     // when it was asked; its last read, 0: none yet
+} question_t;
+static question_t s_qs[SRC_MAX];
+
+// the series that grew out of a question
+static uint16_t s_src, s_target;
+static int s_own = -1;
+static int64_t s_poll_last, s_note_t;
 static int s_polls;
 static bool s_armed, s_told;
 
@@ -126,13 +146,18 @@ static bool s_cand_cap_known;                      // its announce came: its MAC
 static int s_slot = -1;                          // the virtual device in programming mode for this series
 static int s_replace = -1;                       // the series opened the network for a device whose Zigbee device
                                                  // left: the first that joins takes its place
-static uint16_t s_asked_sa;                      // who was asked to leave last, and when
-static int64_t s_asked_t;
 static int64_t s_born[KNX_VDEV_MAX];             // when a device was made here that still has no address, 0: none
 static int64_t s_unload[KNX_VDEV_MAX];           // when ETS unloaded its address, 0: it did not
 static uint16_t s_unload_ia[KNX_VDEV_MAX];       // ... and the address it had
+// The MAC capability its device announced, for the device a place was made for (point 4: a sleepy one cannot be
+// asked whether it is still there). Valid while the place holds that IEEE address.
+static bool s_cap_known[KNX_VDEV_MAX], s_cap_rx_on[KNX_VDEV_MAX];
+static uint8_t s_cap_ieee[KNX_VDEV_MAX][8];
+#define SA_NONE 0xFFFF                           // no short address known
 static uint8_t s_pend[PEND_MAX][8];              // asked to leave, no leave indication yet; the oldest first
-static uint8_t s_pend_n;
+static volatile uint16_t s_pend_sa[PEND_MAX];    // ... the short address it had when it was asked or seen last
+static int64_t s_pend_t[PEND_MAX];               // ... when it was asked last (not kept over a restart)
+static volatile uint8_t s_pend_n;
 static uint32_t s_n_open, s_n_bound, s_n_asked, s_n_ignored, s_n_reclosed, s_n_expired, s_n_window, s_n_waiting;
 static uint32_t s_n_unloaded, s_n_again;
 static int64_t s_scan_t;
@@ -231,9 +256,15 @@ bool pair_is_open(void)
     return st == ST_OPEN || st == ST_WINDOW;
 }
 
-void pair_zb_heard(uint16_t short_addr)   // a ZCL frame came from that device
+void pair_zb_heard(uint16_t short_addr)   // a ZCL frame came from that device (in the Zigbee task)
 {
-    if (s_st == ST_CHECK) {   // only then somebody waits for it; saves the queue the rest of the time
+    // Only a waiting device that is being asked, or a member that was asked to leave, matters here; the rest of the
+    // time this saves the queue. The list is read without a lock: a frame missed while it changes comes again.
+    bool asked = false;
+    for (int i = 0, n = s_pend_n; i < n && i < PEND_MAX && !asked; i++) {
+        asked = s_pend_sa[i] == short_addr;
+    }
+    if (s_st == ST_CHECK || asked) {
         ev_t e = {.type = EV_HEARD, .a = short_addr};
         post(&e);
     }
@@ -246,7 +277,7 @@ static void close_network(int64_t now, const char *why)
     ESP_LOGI(TAG, "Zigbee network closed (%s): %s", why, esp_err_to_name(e));
 }
 
-static void pend_add(const uint8_t ieee[8]);
+static void pend_add(const uint8_t ieee[8], uint16_t sa, int64_t asked);
 
 // With its IEEE address the device is remembered until it is seen leaving: a request that does not reach it (the lamp
 // lost power right after joining) is repeated when it shows up again.
@@ -254,19 +285,29 @@ static void ask_to_leave(uint16_t short_addr, const uint8_t *ieee, const char *w
 {
     esp_err_t e = zb_leave(short_addr, ieee);
     s_n_asked++;
-    s_asked_sa = short_addr;
-    s_asked_t = esp_timer_get_time();
     ESP_LOGW(TAG, "0x%04x %s: asked to leave the network (%s)", short_addr, why, esp_err_to_name(e));
     if (ieee) {
-        pend_add(ieee);
+        pend_add(ieee, short_addr, esp_timer_get_time());
     }
 }
 
 // ---------------------------------------------------------------- asked to leave, not seen leaving (point 10)
+// The IEEE addresses ("leave") and, in the same order, the short addresses ("leave_sa") are kept in the flash: after a
+// restart a member that sends reports is known by its short address as well.
 static int pend_find(const uint8_t ieee[8])
 {
     for (int i = 0; i < s_pend_n; i++) {
         if (memcmp(s_pend[i], ieee, 8) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int pend_by_sa(uint16_t sa)
+{
+    for (int i = 0; i < s_pend_n && sa != SA_NONE; i++) {
+        if (s_pend_sa[i] == sa) {
             return i;
         }
     }
@@ -278,22 +319,46 @@ static void pend_save(void)
     if (!s_nvs_ok) {
         return;
     }
+    uint16_t sa[PEND_MAX];
+    for (int i = 0; i < s_pend_n; i++) {
+        sa[i] = s_pend_sa[i];
+    }
     esp_err_t e = s_pend_n ? nvs_set_blob(s_nvs, "leave", s_pend, (size_t)s_pend_n * 8) : nvs_erase_key(s_nvs, "leave");
-    if (e == ESP_OK) {
+    if (e == ESP_OK || e == ESP_ERR_NVS_NOT_FOUND) {
+        e = s_pend_n ? nvs_set_blob(s_nvs, "leave_sa", sa, (size_t)s_pend_n * 2) : nvs_erase_key(s_nvs, "leave_sa");
+    }
+    if (e == ESP_OK || e == ESP_ERR_NVS_NOT_FOUND) {
         e = nvs_commit(s_nvs);
     }
-    if (e != ESP_OK && e != ESP_ERR_NVS_NOT_FOUND) {
+    if (e != ESP_OK) {
         ESP_LOGE(TAG, "the list of devices asked to leave is not saved (%s)", esp_err_to_name(e));
     }
 }
 
 static void pend_load(void)
 {
-    size_t n = sizeof s_pend;
+    size_t n = sizeof s_pend, m;
+    uint16_t sa[PEND_MAX];
     s_pend_n = 0;
     if (s_nvs_ok && nvs_get_blob(s_nvs, "leave", s_pend, &n) == ESP_OK && n % 8 == 0) {
         s_pend_n = (uint8_t)(n / 8);
     }
+    m = sizeof sa;
+    bool have_sa = s_nvs_ok && nvs_get_blob(s_nvs, "leave_sa", sa, &m) == ESP_OK && m == (size_t)s_pend_n * 2;
+    for (int i = 0; i < PEND_MAX; i++) {   // a list saved by older firmware has no short addresses
+        s_pend_sa[i] = have_sa && i < s_pend_n ? sa[i] : SA_NONE;
+        s_pend_t[i] = 0;
+    }
+}
+
+static void pend_remove(int i)
+{
+    for (int j = i; j < s_pend_n - 1; j++) {
+        memcpy(s_pend[j], s_pend[j + 1], 8);
+        s_pend_sa[j] = s_pend_sa[j + 1];
+        s_pend_t[j] = s_pend_t[j + 1];
+    }
+    s_pend_n--;
 }
 
 static bool pend_drop(const uint8_t ieee[8])
@@ -302,26 +367,52 @@ static bool pend_drop(const uint8_t ieee[8])
     if (i < 0) {
         return false;
     }
-    if (i < s_pend_n - 1) {
-        memmove(s_pend[i], s_pend[i + 1], (size_t)(s_pend_n - 1 - i) * 8);
-    }
-    s_pend_n--;
+    pend_remove(i);
     pend_save();
     return true;
 }
 
-static void pend_add(const uint8_t ieee[8])
+// asked: when the request went out, 0: not known (it is asked when it shows up)
+static void pend_add(const uint8_t ieee[8], uint16_t sa, int64_t asked)
 {
     static const uint8_t none[8];
-    if (memcmp(ieee, none, 8) == 0 || pend_find(ieee) >= 0) {
+    if (memcmp(ieee, none, 8) == 0) {
+        return;
+    }
+    int i = pend_find(ieee);
+    if (i >= 0) {   // remembered already: asked once more, perhaps at another short address
+        s_pend_t[i] = asked ? asked : s_pend_t[i];
+        if (sa != SA_NONE && sa != s_pend_sa[i]) {
+            s_pend_sa[i] = sa;
+            pend_save();
+        }
         return;
     }
     if (s_pend_n == PEND_MAX) {   // the oldest goes: it stays a member nobody serves
-        memmove(s_pend[0], s_pend[1], (PEND_MAX - 1) * 8);
-        s_pend_n--;
+        pend_remove(0);
     }
-    memcpy(s_pend[s_pend_n++], ieee, 8);
+    memcpy(s_pend[s_pend_n], ieee, 8);
+    s_pend_sa[s_pend_n] = sa;
+    s_pend_t[s_pend_n] = asked;
+    s_pend_n++;
     pend_save();
+}
+
+// The device with this IEEE address uses this short address now (its announce, its Device_Update). A remembered
+// device follows it; one remembered under that short address that is another device does not have it any more.
+static void pend_seen(uint16_t sa, const uint8_t ieee[8])
+{
+    bool changed = false;
+    for (int i = 0; i < s_pend_n; i++) {
+        uint16_t now_sa = memcmp(s_pend[i], ieee, 8) == 0 ? sa : s_pend_sa[i] == sa ? SA_NONE : s_pend_sa[i];
+        if (now_sa != s_pend_sa[i]) {
+            s_pend_sa[i] = now_sa;
+            changed = true;
+        }
+    }
+    if (changed) {
+        pend_save();
+    }
 }
 
 // ---------------------------------------------------------------- unloaded and not removed yet (point 9), in the flash
@@ -376,6 +467,31 @@ static void unl_load(void)   // at the start: who was unloaded and still has no 
     }
 }
 
+// ---------------------------------------------------------------- what a device announced about its receiver
+static void cap_note(int i, const uint8_t ieee[8], bool known, uint8_t capability)
+{
+    if (i < 0 || i >= KNX_VDEV_MAX) {
+        return;
+    }
+    s_cap_known[i] = known;
+    s_cap_rx_on[i] = capability & 0x08;   // MAC capability flags, bit 3: receiver on when idle
+    memcpy(s_cap_ieee[i], ieee, 8);
+}
+
+// The Zigbee device of virtual device i is a sleepy end device: its receiver is off between its polls, so a read
+// reaches it only when it wakes, which may be minutes later (a remote). Known from its announce.
+static bool sleeps(int i)
+{
+    uint8_t ieee[8];
+    if (i < 0 || i >= KNX_VDEV_MAX) {
+        return false;
+    }
+    if (s_cap_known[i] && vdev_ieee(i, ieee) && memcmp(ieee, s_cap_ieee[i], 8) == 0) {
+        return !s_cap_rx_on[i];
+    }
+    return vdev_rx_on(i) == 0;   // not seen since a restart: what the device record kept from an earlier announce
+}
+
 // A virtual device goes for good, and its Zigbee device with it. The series that had it in hand is over.
 static void remove_device(int i, const char *why)
 {
@@ -387,11 +503,12 @@ static void remove_device(int i, const char *why)
     if (vdev_zigbee(i, &za, &ep) && !vdev_is_gone(i)) {
         ask_to_leave(za, NULL, why);   // without the address in the request, as shown on the bench
         if (vdev_ieee(i, ieee)) {
-            pend_add(ieee);
+            pend_add(ieee, za, esp_timer_get_time());
         }
     }
     vdev_del(i);
     s_born[i] = 0;
+    s_cap_known[i] = false;
     unl_clear(i);
     if (i == s_slot) {
         s_slot = -1;
@@ -453,6 +570,7 @@ static void candidate_ok(int64_t now)
         if (s_cand_cap_known) {   // otherwise the node descriptor of the interview brings it
             vdev_set_capability(s_cand_ieee, s_cand_cap);
         }
+        cap_note(r, s_cand_ieee, s_cand_cap_known, s_cand_cap);
         zlink_discover(s_cand);   // the full interview while it is awake: which endpoint has its function
         vdev_prog(r, true);
         s_slot = r;
@@ -476,6 +594,7 @@ static void candidate_ok(int64_t now)
     if (s_cand_cap_known) {
         vdev_set_capability(s_cand_ieee, s_cand_cap);
     }
+    cap_note(n, s_cand_ieee, s_cand_cap_known, s_cand_cap);
     zlink_discover(s_cand);   // the full interview while it is awake: which endpoint has its function
     s_born[n] = now;
     if (s_cand_window) {   // nobody asks for an address yet: it waits, and the next question in the range takes it
@@ -574,6 +693,16 @@ static void begin(int64_t now)   // two reads of an armed series and nothing und
     }
     uint16_t za;
     uint8_t ep;
+    if (w >= 0 && vdev_zigbee(w, &za, &ep) && sleeps(w)) {
+        // A sleepy device (a remote that came through the pairing window) hears a question only when it wakes: it
+        // would be removed for not answering. It is offered as it is.
+        vdev_prog(w, true);
+        s_slot = w;
+        s_st = ST_PENDING;
+        ESP_LOGI(TAG, "ETS asks for %s: virtual device %d waits without an address; 0x%04x sleeps and cannot be asked "
+                 "whether it is still there: it goes into programming mode as it is", t, w, za);
+        return;
+    }
     if (w >= 0 && vdev_zigbee(w, &za, &ep)) {   // somebody waits without an address: is it still there?
         static const uint16_t model[] = {0x0005};
         s_slot = w;
@@ -606,6 +735,31 @@ static void begin(int64_t now)   // two reads of an armed series and nothing und
     ESP_LOGI(TAG, "ETS asks for %s: Zigbee network open, the first device that joins gets the address", t);
 }
 
+static question_t *question_of(uint16_t src, bool make)
+{
+    question_t *q = NULL;
+    for (int i = 0; i < SRC_MAX; i++) {
+        if (s_qs[i].used && s_qs[i].src == src) {
+            return &s_qs[i];
+        }
+    }
+    if (!make) {
+        return NULL;
+    }
+    for (int i = 0; i < SRC_MAX; i++) {   // a free entry, else the one that was heard of longest ago
+        question_t *c = &s_qs[i];
+        if (!c->used) {
+            q = c;
+            break;
+        }
+        if (!q || (c->last > c->t ? c->last : c->t) < (q->last > q->t ? q->last : q->t)) {
+            q = c;
+        }
+    }
+    *q = (question_t){.src = src, .used = true};
+    return q;
+}
+
 static void on_probe(const ev_t *e, int64_t now)
 {
     if (s_st == ST_DONE && e->a == s_src && e->b != s_target) {
@@ -622,10 +776,12 @@ static void on_probe(const ev_t *e, int64_t now)
         end_series(now, e->b == s_target && s_st == ST_PENDING ? "ETS found the device at its address"
                                                               : "ETS asks for another address");
     }
-    s_probe_src = e->a;
-    s_probe_dst = e->b;
-    s_probe_own = e->own;
-    s_probe_t = now;
+    question_t *q = question_of(e->a, true);
+    q->dst = e->b;
+    q->own = e->own;
+    q->t = now;
+    q->last = 0;
+    q->live = q->spent = false;
 }
 
 static void on_poll(uint16_t src, int64_t now)
@@ -633,9 +789,17 @@ static void on_poll(uint16_t src, int64_t now)
     if (s_st == ST_DONE && src == s_src) {
         return;   // ETS reads once more after it wrote the address; the device answers, nothing else to do
     }
+    question_t *q = question_of(src, false);
+    if (q && !q->spent) {
+        if (q->live && now - q->last > POLL_GAP_US) {
+            q->live = false;   // its reads stopped for longer than ETS waits between two: that question is over
+        } else if (!q->live && !q->last && now - q->t < PROBE_VALID_US) {
+            q->live = true;    // the first read follows the question
+        }
+        q->last = q->live ? now : q->last ? q->last : now;
+    }
     if (!s_armed) {
-        bool asked = s_probe_t && src == s_probe_src && now - s_probe_t < PROBE_VALID_US;
-        if (!asked) {   // reads without a question we saw, or of somebody else: not ours to act on
+        if (!q || !q->live || q->spent) {   // reads without a question we saw, or of somebody else: not ours to act on
             if (now - s_note_t > 30000000) {
                 s_note_t = now;
                 s_n_ignored++;
@@ -644,10 +808,10 @@ static void on_poll(uint16_t src, int64_t now)
             }
             return;
         }
-        s_probe_t = 0;   // a question starts one series
+        q->spent = true;   // a question starts one series
         s_src = src;
-        s_target = s_probe_dst;
-        s_own = s_probe_own;
+        s_target = q->dst;
+        s_own = q->own;
         s_polls = 0;
         s_told = false;
         if (!s_enabled || (s_own < 0 && (s_target < s_lo || s_target > s_hi))) {
@@ -776,23 +940,43 @@ static void on_tick(int64_t now)
 
 static void on_left(uint16_t sa, const uint8_t ieee[8]);
 
-// A member that was asked to leave shows up again (its announce after a power cut, a rejoin): the request did not
-// reach it then, it gets it again. True: it was asked.
+// A member that was asked to leave shows up again (its announce after a power cut, a rejoin, a report it sends): the
+// request did not reach it then, it gets it again. True: it was asked.
 static bool still_here(uint16_t sa, const uint8_t ieee[8], int64_t now)
 {
-    if (pend_find(ieee) < 0) {
+    int i = pend_find(ieee);
+    if (i < 0) {
         return false;
     }
     if (vdev_by_ieee(ieee) >= 0) {
         pend_drop(ieee);   // it has a virtual device again: nothing is left to ask (a new join drops it in on_update)
         return false;
     }
-    if (sa == s_asked_sa && s_asked_t && now - s_asked_t < AGAIN_US) {
-        return true;   // asked a moment ago: its rejoin and its announce come together
+    if (s_pend_t[i] && now - s_pend_t[i] < AGAIN_US) {
+        return true;   // asked a moment ago: its rejoin, its announce and its reports come together
     }
     s_n_again++;
+    s_pend_t[i] = now;
     ask_to_leave(sa, NULL, "was asked to leave and is still a member");
     return true;
+}
+
+// A frame came from the short address a member that was asked to leave had (pair_zb_heard). That address may be one
+// of our devices' by now: then it is not the member any more, and nobody is asked.
+static void pend_heard(uint16_t sa, int64_t now)
+{
+    int i = pend_by_sa(sa);
+    if (i < 0) {
+        return;
+    }
+    uint8_t ieee[8];
+    memcpy(ieee, s_pend[i], 8);
+    if (vdev_by_ieee(ieee) < 0 && vdev_of_zigbee(sa) >= 0) {
+        s_pend_sa[i] = SA_NONE;
+        pend_save();
+        return;
+    }
+    still_here(sa, ieee, now);
 }
 
 // The very device whose place the open series keeps is back (vdev_seen() has moved it to its short address already):
@@ -838,6 +1022,25 @@ static void joined(const ev_t *e, int64_t now)
     }
 }
 
+// One of our devices joined as a device new to the network does (Device_Update "joined", not a rejoin): it was reset
+// by hand. It stays with its virtual device, address and download; what the reset cleared in it (binding, reporting,
+// what its class wrote into it) is set up again. While the network is open for a new device it is not taken for that
+// one: whoever reset it to give it another address has to unload its address in ETS first.
+static void reset_joined(const ev_t *e, bool taken_back)
+{
+    int i = vdev_by_ieee(e->ieee);
+    if (i < 0) {
+        return;
+    }
+    bool linked = zlink_reinterview(100 + i);   // instance 100 + n belongs to virtual device n (VDEV_GW_INST)
+    bool waits = !taken_back && (s_st == ST_OPEN || s_st == ST_WINDOW || s_st == ST_AUTH);
+    ESP_LOGW(TAG, "0x%04x joined anew, as a device that was reset does: it is the Zigbee device of virtual device %d "
+             "(%s) and stays with it; %s%s", e->a, i, vdev_unbound(i) ? "no address yet" : "it has its address",
+             linked ? "its binding, reporting and the parameters of its class are set up again"
+                    : "it runs no class yet, nothing to set up",
+             waits ? ". It is not the new device the open network waits for" : "");
+}
+
 static void on_update(const ev_t *e, int64_t now)
 {
     // Device_Update status as in the APS: 0 secured rejoin, 1 joined, 2 left, 3 trust centre rejoin. Only 1 is a
@@ -846,11 +1049,16 @@ static void on_update(const ev_t *e, int64_t now)
         on_left(e->a, e->ieee);
         return;
     }
+    pend_seen(e->a, e->ieee);
     bool ours = vdev_seen(e->a, e->ieee);
     if (e->b == 1) {
         pend_drop(e->ieee);   // whoever it was before: it joined anew, a device like any other
     }
-    if (came_back(e->a, e->ieee, now)) {
+    bool back = came_back(e->a, e->ieee, now);
+    if (e->b == 1 && ours) {
+        reset_joined(e, back);
+    }
+    if (back) {
         return;
     }
     if (e->b != 1) {
@@ -864,6 +1072,8 @@ static void on_announce(const ev_t *e, int64_t now)
 {
     uint16_t sa = e->a;
     vdev_set_capability(e->ieee, e->cap);   // one of ours: whether it sleeps; nobody's: nothing happens
+    cap_note(vdev_by_ieee(e->ieee), e->ieee, true, e->cap);
+    pend_seen(sa, e->ieee);
     if (s_have_cand && sa == s_cand) {   // the candidate: the flags go to the virtual device it becomes
         s_cand_cap = e->cap;
         s_cand_cap_known = true;
@@ -909,7 +1119,6 @@ static void on_assigned(int slot, uint16_t ia, int64_t now)
         s_done_t = now;
         s_st = ST_DONE;
         s_armed = false;
-        s_probe_t = 0;
     }
 }
 
@@ -952,6 +1161,7 @@ static void on_left(uint16_t sa, const uint8_t ieee[8])
         uint16_t old = s_unload_ia[i];
         vdev_del(i);
         s_born[i] = 0;
+        s_cap_known[i] = false;
         unl_clear(i);   // or the device that gets this place next would be removed in its stead
         if (unloaded) {   // ETS unloaded it a moment ago and it left by itself: the removal that was coming anyway
             char t[12];
@@ -984,7 +1194,8 @@ static void pair_task(void *arg)
             case EV_AUTHORIZED: on_authorized(e.a, e.ok, now); break;
             case EV_LEFT: on_left(e.a, e.ieee); break;
             case EV_UNLOADED: on_unloaded(e.a, e.b, now); break;
-            case EV_REMOVED: pend_add(e.ieee); break;
+            // the console asked it, at a short address this does not know: its next announce or rejoin asks again
+            case EV_REMOVED: pend_add(e.ieee, SA_NONE, 0); break;
             case EV_PROG_ENDED:   // ETS has been reading for 4 min and wrote no address: this series is over
                 if (s_st == ST_PENDING && e.a == (uint16_t)s_slot) {
                     end_series(now, "programming mode ended by itself");
@@ -994,6 +1205,7 @@ static void pair_task(void *arg)
                 if (s_st == ST_CHECK && e.a == s_check_sa) {
                     s_heard = true;
                 }
+                pend_heard(e.a, now);
                 break;
             case EV_OPENED:   // also with binding from ETS switched off: nobody opens this network but this firmware
                 if (s_st == ST_OPEN || s_st == ST_WINDOW) {

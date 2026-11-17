@@ -141,7 +141,7 @@ static bool on_zcl_raw(const ezb_zcl_raw_frame_t *f)
 static void to_link(const ezb_zcl_cmd_hdr_t *h, uint16_t attr, uint8_t type, const void *val)
 {
     if (h && h->src_addr.addr_mode == EZB_ADDR_MODE_SHORT) {
-        zlink_attr(h->src_addr.u.short_addr, h->cluster_id, attr, type, val);
+        zlink_attr_ep(h->src_addr.u.short_addr, h->src_ep, h->cluster_id, attr, type, val);
     }
 }
 
@@ -409,10 +409,40 @@ esp_err_t zb_permit_join_as(uint8_t seconds, bool own)
     return r;
 }
 
+static const char *ezb_err_str(ezb_err_t e)   // the generic codes of ezbee/error.h, NULL for any other
+{
+    switch (e) {
+    case EZB_ERR_FAIL: return "failure";
+    case EZB_ERR_NO_MEM: return "no memory";
+    case EZB_ERR_INV_ARG: return "invalid argument";
+    case EZB_ERR_INV_STATE: return "invalid state";
+    case EZB_ERR_NOT_FOUND: return "not found";
+    case EZB_ERR_NOT_SUPPORTED: return "not supported";
+    case EZB_ERR_TIMEOUT: return "timeout";
+    case EZB_ERR_ABORT: return "aborted";
+    case EZB_ERR_BUSY: return "busy";
+    default: return NULL;
+    }
+}
+
+// The outcome of our Mgmt_Leave_req. A timeout only says that no response came in time: a lamp has been seen to leave
+// a second after it. Whether a device left shows in its leave indication or a Device_Update "left" (pair.c).
 static void leave_cb(const ezb_zdo_nwk_mgmt_leave_req_result_t *r, void *ctx)
 {
-    ESP_LOGI(TAG, "leave request to 0x%04x: error %d, status %d", (unsigned)(uintptr_t)ctx, r ? (int)r->error : -1,
-             r && r->rsp ? (int)r->rsp->status : -1);
+    unsigned a = (unsigned)(uintptr_t)ctx;
+    if (!r) {
+        ESP_LOGW(TAG, "leave request to 0x%04x: no outcome reported", a);
+    } else if (r->error == EZB_ERR_TIMEOUT) {
+        ESP_LOGW(TAG, "leave request to 0x%04x: no response in time; it may leave all the same, its leave indication "
+                 "tells", a);
+    } else if (r->error != EZB_ERR_NONE || !r->rsp) {
+        const char *n = ezb_err_str(r->error);
+        ESP_LOGW(TAG, "leave request to 0x%04x: no response, error 0x%04x (%s)", a, (unsigned)r->error,
+                 n ? n : "see ezbee/error.h");
+    } else {
+        ESP_LOGI(TAG, "leave request to 0x%04x: ZDP status 0x%02x (%s)", a, (unsigned)r->rsp->status,
+                 r->rsp->status == 0 ? "it confirms and leaves" : "refused");
+    }
 }
 
 // ---------------------------------------------------------------- the full interview (ep_pick.h, zlink.c)

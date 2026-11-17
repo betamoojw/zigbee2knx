@@ -19,9 +19,14 @@ Classes (KNX Standard 07_20_02 Lighting Actuators):
 A model whose definition does not fit a class exactly (colour, other value sets, several endpoints, a
 switch with more than switching) is reported and left out. Every class gets a product per model and per
 white-label name, so that ETS finds a plug under the number on its box (IKEA E2204, Zigbee2MQTT model E22x4).
-Every class has, behind its other objects, the object "Available": whether the gateway reaches the Zigbee
-device (dp_event "availability" on endpoint 0, firmware main/avail.h). New objects only ever go behind the
-existing ones, so that the links survive when ETS updates a device to the next application version.
+Every class has the object "Available": whether the gateway reaches the Zigbee device (dp_event "availability" on
+endpoint 0, firmware main/avail.h); its number is fixed per class (CLASSES).
+
+Versions: the template version is the application version. A class keeps its object numbers and parameter ids
+(P-n = position in the parameter list, so new parameters only ever go behind the existing ones) with their meaning
+across versions, and a new version replaces every lower version given out: knx.application.replaces comes from
+producer/issued.json, and tests/test_issued.py holds the generated producer inputs against that list.
+Catalog: every product lies in the section Zigbee2KNX, in the subsection of its class (CLASSES "section").
 
 Radio side in Zigbee2MQTT terms: datapoint "<endpoint>.<property path>"; endpoint 0 carries the device
 identity ("0.zigbeeModel") and its availability ("0.availability"). The Berry is written as it is embedded:
@@ -37,9 +42,24 @@ import json
 import os
 import sys
 
-GEN = "distill/z2m_to_knx.py v3"
+GEN = "distill/z2m_to_knx.py v4"
 Z2M_VERSION = "26.57.0"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ISSUED = os.path.join(ROOT, "producer", "issued.json")
 BUS_CURRENT_MA = 0                       # a virtual device draws nothing from the bus; the gateway's hardware does
+# BusCurrent is not registration-relevant, so the hardware ids stay; versions given out before carried 10 mA under
+# the same ids. NonRegRelevantDataVersion 1 marks the changed data, so that an import takes it over.
+HW_NONREG_VERSION = 1
+# The catalog: one section for the products of this project, a subsection per kind of device (ids
+# M-00FA_CS-<number>, M-00FA_CS-<number>-<number>; ETS merges a section of the same id across product files).
+CATALOG_TOP = {"number": "Zigbee2KNX", "name": "Zigbee2KNX"}
+SECTIONS = {"gateway": {"number": "Gateway", "name": "Gateway"}, "lights": {"number": "Lights", "name": "Lights"},
+            "plugs": {"number": "PlugsSwitches", "name": "Plugs and switches"},
+            "remotes": {"number": "Remotes", "name": "Remotes"}}
+# Steps of DPT 3.007 (KNX 03_07_02): step code 1..7 = 1/2^(code-1) of the range, 0 = stop. A remote's Zigbee Step
+# command becomes the step code nearest to its step size on a logarithmic scale: the geometric means of
+# 254/2^(code-1) and the next one are the limits (step size >= 180: code 1, >= 90: code 2, ...).
+STEP_LIMITS = [180, 90, 45, 23, 12, 6]
 POWER_ON = ["off", "on", "toggle", "previous"]
 LEVEL_START = ["minimum", "previous"]
 CT_PREVIOUS = 65535                      # color_temp_startup preset "previous" (Zigbee2MQTT definition)
@@ -59,22 +79,40 @@ CHILD_LOCK = {"manuSpecificIkeaSmartPlug": "fc85,0000,10,117c"}
 REMOTE_ACTIONS = {"on", "off", "toggle", "brightness_move_up", "brightness_move_down", "brightness_stop",
                   "brightness_step_up", "brightness_step_down", "brightness_move_to_level"}
 REMOTE_EXTRAS = {"action", "battery", "battery_low", "voltage", "identify", "linkquality"}
-R_BATTERY = 1
+# remote class: model table entry [flags, firmware version]; flags 1 battery, 2 reports BatteryPercentageRemaining in
+# percent instead of half percent, 4 does so below the firmware version of the entry (semver, as Zigbee2MQTT compares).
+R_BATTERY, R_PERCENT, R_PERCENT_BELOW = 1, 2, 4
+# Battery in percent, by Zigbee2MQTT model (facts from zigbee-herdsman-converters 26.57.0): devices/ikea.ts gives
+# ICTC-G-1 m.battery({dontDividePercentage: true}); the definitions with ikeaBattery() (lib/ikea.ts) report percent
+# below firmware 2.4.0, E2103 below 24.4.13; every other definition reports half percent (ZCL).
+BATTERY_PERCENT = {"ICTC-G-1"}
+IKEA_BATTERY = {"E1524/E1810", "E1525/E1745", "E1743", "E1744", "E1757", "E1766", "E1812", "E1841", "E1926",
+                "E2001/E2002/E2313", "E2102", "E2103"}
+IKEA_BATTERY_FIXED = {"E2103": [24, 4, 13]}
+IKEA_BATTERY_FIXED_DEFAULT = [2, 4, 0]
 
-# tpl: the template's version; version: the application's, replaces: the application versions ETS may update from
-# (knx.application.replaces, put into ReplacesVersions by distill/knxprod_products.py). Light classes: version 1
-# carried the template in text parameters (FE20/FE21), version 2 as segment data (C001/C002),
-# version 3 adds the object "Available". Switch and remote: version 2 adds it.
+# version: the application's and the template's; replaces (knx.application.replaces, put into ReplacesVersions by
+# distill/knxprod_products.py): every lower version given out (producer/issued.json). available: the number of the
+# object "Available", fixed once given out. Light classes: version 1 carried the template in text parameters
+# (FE20/FE21), version 2 as segment data (C001/C002), version 3 adds the object "Available"; switch and remote:
+# version 2 adds it.
 CLASSES = {
     "dimmable": {"dir": "zigbee-dimmable-light", "app": 0xC001, "name": "Zigbee dimmable light",
-                 "order": "ZB-LIGHT-DIM", "tpl": 2, "version": 3, "replaces": [2]},
+                 "order": "ZB-LIGHT-DIM", "version": 3, "available": 7, "section": "lights"},
     "switch": {"dir": "zigbee-switch", "app": 0xC003, "name": "Zigbee switch", "order": "ZB-SWITCH",
-               "tpl": 2, "version": 2, "replaces": [1]},
+               "version": 3, "available": 4, "section": "plugs"},
     "remote": {"dir": "zigbee-remote", "app": 0xC004, "name": "Zigbee remote", "order": "ZB-REMOTE",
-               "tpl": 2, "version": 2, "replaces": [1]},
+               "version": 2, "available": 6, "section": "remotes"},
     "white_spectrum": {"dir": "zigbee-white-spectrum-light", "app": 0xC002, "name": "Zigbee white spectrum light",
-                       "order": "ZB-LIGHT-WS", "tpl": 2, "version": 3, "replaces": [2]},
+                       "order": "ZB-LIGHT-WS", "version": 4, "available": 11, "section": "lights"},
 }
+
+
+def replaces(app: int, version: int, path: str = ISSUED) -> list:
+    """Every version of the application given out below `version` (producer/issued.json)."""
+    with open(path, encoding="utf-8") as f:
+        issued = json.load(f)
+    return sorted(e["version"] for e in issued["applications"] if e["number"] == app and e["version"] < version)
 
 
 class GenError(Exception):
@@ -119,9 +157,16 @@ def shorten_berry(src: str) -> str:
     return "\n".join(out) + "\n"
 
 
-def avail_object(number: int) -> dict:
-    """Object "Available": behind the class's other objects."""
-    return {"number": number, "name": "Available", "text": "Zigbee device reachable", "function": "Status",
+def avail_object(spec: dict, sleepy: bool = False) -> dict:
+    """Object "Available", with the number the class keeps. A sleepy device (battery, receiver off when idle) is never
+    asked: the object says whether a frame came in the last 25 h (firmware avail.h)."""
+    if sleepy:
+        return {"number": spec["available"], "name": "Available", "text": "Zigbee device heard in the last 25 h",
+                "function": "Status", "size": "1 Bit", "flags": "CRT", "dpt": "1.002",
+                "zigbee": "0.availability <- gateway (firmware avail.h): a battery device sleeps and is never asked; "
+                          "true from its first frame, false after 25 h without one (also a remote that is only not "
+                          "used); no value after a start of the gateway until its first frame"}
+    return {"number": spec["available"], "name": "Available", "text": "Zigbee device reachable", "function": "Status",
             "size": "1 Bit", "flags": "CRT", "dpt": "1.002",
             "zigbee": "0.availability <- gateway (firmware avail.h): true while the device answers, false when not; "
                       "the first true after linking only fills the shadow"}
@@ -130,15 +175,20 @@ def avail_object(number: int) -> dict:
 def knx_part(spec: dict, objects: list, ptypes: dict, seg: int, plist: list) -> dict:
     """manifest["knx"] of a class: application (with the versions it replaces), hardware, catalog, objects,
     parameters, embedding as segment data."""
+    numbers = [o["number"] for o in objects]
+    if len(set(numbers)) != len(numbers) or [o["number"] for o in objects if o["name"] == "Available"] != [spec["available"]]:
+        raise GenError(f"{spec['dir']}: object numbers {numbers}, 'Available' must be {spec['available']}")
     return {
         "manufacturer": "M-00FA",
         "language": "en",
         "application": {"name": spec["name"], "number": spec["app"], "version": spec["version"],
-                        "replaces": spec["replaces"], "mask": "MV-07B0", "order_info": spec["order"][:10]},
+                        "replaces": replaces(spec["app"], spec["version"]), "mask": "MV-07B0",
+                        "order_info": spec["order"][:10]},
         "hardware": {"name": spec["name"], "serial_number": str(spec["app"]), "version": 1,
-                     "bus_current_ma": BUS_CURRENT_MA, "order_number": spec["order"]},
-        "catalog": {"section": "Devices", "section_number": "1", "item_number": "1"},
-        "objects": objects,
+                     "bus_current_ma": BUS_CURRENT_MA, "nonreg_version": HW_NONREG_VERSION,
+                     "order_number": spec["order"]},
+        "catalog": {"sections": [CATALOG_TOP, SECTIONS[spec["section"]]], "item_number": "1"},
+        "objects": sorted(objects, key=lambda o: o["number"]),
         "parameter_types": ptypes,
         "parameters": {"segment_size": seg, "block": {"name": "General", "text": spec["name"]}, "list": plist},
         "embed": {"carrier": "data"},
@@ -264,7 +314,15 @@ def classify_remote(r: dict) -> tuple[str, list]:
     more = sorted({str(e.get("name")) for e in ex if e.get("name") not in REMOTE_EXTRAS})
     if more:
         raise GenError(f"more than a remote: {', '.join(more)}")
-    return "remote", [R_BATTERY if find(ex, "battery") else 0]
+    flags, below = 0, []
+    if find(ex, "battery"):
+        flags |= R_BATTERY
+        if r["model"] in BATTERY_PERCENT:
+            flags |= R_PERCENT
+        elif r["model"] in IKEA_BATTERY:
+            flags |= R_PERCENT_BELOW
+            below = IKEA_BATTERY_FIXED.get(r["model"], IKEA_BATTERY_FIXED_DEFAULT)
+    return "remote", [flags, below]
 
 
 BERRY_REMOTE = r'''# SPDX-License-Identifier: GPL-3.0-only
@@ -274,14 +332,18 @@ BERRY_REMOTE = r'''# SPDX-License-Identifier: GPL-3.0-only
 # (zigbee-herdsman-converters @Z2M@, MIT, facts only). Change the generator, not this file.
 #
 # KNX: a push button. Switch (KO 1, on/off/toggle), Dimming (KO 2, DPT 3.007: start brighter/darker, stop, a step
-# of 12.5 %), Value (KO 3, DPT 5.001, from "move to level"), Battery (KO 4, %), Switch status (KO 5: the state
-# of what the button switches, so toggle sends the opposite), Available (KO 6: the gateway hears the remote).
-# Parameter: invert the switch telegrams.
+# with the step code nearest to the remote's step size), Value (KO 3, DPT 5.001, from "move to level"), Battery
+# (KO 4, %), Switch status (KO 5: the state of what the button switches, so toggle sends the opposite), Available
+# (KO 6: the gateway heard the remote in the last 25 h). Parameter: invert the switch telegrams.
 # Zigbee: the remote's buttons arrive as commands (gateway: datapoint "zcl.cmd" = "cluster,command,payload" in
 # hex): On/Off 0x0006 (0 off, 1 on, 2 toggle, 0x40 off with effect, 0x41/0x42 on), Level 0x0008 (0/4 move to
-# level, 1/5 move, 2/6 step, 3/7 stop). Battery from BatteryPercentageRemaining as "battery" in percent.
-# Endpoint 0: the identity (zigbeeModel) and the gateway's availability (true/false; a sleeping remote counts as
-# gone after 25 h without a frame, firmware avail.h).
+# level, 1/5 move, 2/6 step: mode, step size, transition; 3/7 stop). Battery: BatteryPercentageRemaining as the
+# remote reports it ("batteryPercentageRemaining", half percent by ZCL); the model table says which models report
+# percent instead, as Zigbee2MQTT reads them, some only below a firmware version (endpoint 0 "swBuildId", Basic
+# SWBuildID, compared as a semantic version the way Zigbee2MQTT does). "battery" in percent comes from gateways that
+# deliver it already converted.
+# Endpoint 0: the identity (zigbeeModel, swBuildId) and the gateway's availability (true/false; a sleeping remote
+# counts as gone after 25 h without a frame, firmware avail.h).
 import string
 
 class zb_remote
@@ -291,16 +353,19 @@ class zb_remote
     static KO_BATTERY = 4
     static KO_SWITCH_STATUS = 5
     static KO_AVAILABLE = @KO_AVAIL@
+    static F_PERCENT = 2
+    static F_PERCENT_BELOW = 4
+    static STEP_LIMITS = @STEP_LIMITS@
     static MODELS = @MODELS@
 @POFF@
     static def cfg()
         var c = host.state_get('cfg')
         return c == nil ? {'inv': false} : c
     end
-    static def byte(v)                          # 0..100 % -> DPT 5.001
-        var b = bytes()
-        b.add((v * 255 + 50) / 100, 1)
-        return b
+    static def model()                          # entry of this device in MODELS, or the class defaults
+        var zm = host.dp_get(0, 'zigbeeModel')
+        var e = zm != nil ? zb_remote.MODELS.find(zm) : nil
+        return e != nil ? e : @DEFAULT_ENTRY@
     end
     static def switch(on)
         host.state_set('sw', on)
@@ -311,6 +376,92 @@ class zb_remote
         var b = bytes()
         b.add(code, 1)
         host.ko_send(zb_remote.KO_DIM, b)
+    end
+    static def step_code(size)                  # Zigbee step size (of 254) -> the nearest DPT 3.007 step code
+        var code = 1
+        for lim : zb_remote.STEP_LIMITS
+            if size < lim  code += 1 end
+        end
+        return code
+    end
+    static def ident(s, i, j)                   # s[i..j) is one identifier of a semantic version: letters, digits, '-'
+        if i >= j  return false end
+        while i < j
+            var c = string.byte(s[i])
+            if !((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45)  return false end
+            i += 1
+        end
+        return true
+    end
+    static def idents(s, i, j)                  # s[i..j): identifiers separated by '.'
+        var k = i
+        while k <= j
+            if k == j || s[k] == '.'
+                if !zb_remote.ident(s, i, k)  return false end
+                i = k + 1
+            end
+            k += 1
+        end
+        return true
+    end
+    static def version(s)                       # semantic version, loose ("v2.3.075", "2.4.0-beta"): [major, minor, patch,
+        if type(s) != 'string'  return nil end  # prerelease] or nil
+        var i = 0
+        var n = size(s)
+        while i < n && string.find(' \t\r\n', s[i]) >= 0  i += 1 end
+        while n > i && string.find(' \t\r\n', s[n - 1]) >= 0  n -= 1 end
+        while i < n && string.find('v= \t\r\n', s[i]) >= 0  i += 1 end
+        var v = []
+        for f : 0 .. 2
+            var d = 0
+            var k = i
+            while k < n && string.byte(s[k]) >= 48 && string.byte(s[k]) <= 57
+                d = d * 10 + string.byte(s[k]) - 48
+                k += 1
+            end
+            if k == i  return nil end
+            v.push(d)
+            i = k
+            if f < 2
+                if i >= n || s[i] != '.'  return nil end
+                i += 1
+            end
+        end
+        var plus = string.find(s, '+', i)
+        var e = plus >= 0 && plus < n ? plus : n
+        if plus >= 0 && plus < n && !zb_remote.idents(s, plus + 1, n)  return nil end
+        var pre = false
+        if i < e
+            if s[i] == '-' && i + 1 == e
+                pre = true
+            else
+                if s[i] == '-'  i += 1 end
+                if s[i] == '.' || !zb_remote.idents(s, i, e)  return nil end
+                pre = true
+            end
+        end
+        v.push(pre)
+        return v
+    end
+    static def below(v, w)                      # version v lower than w (w without prerelease)
+        for f : 0 .. 2
+            if v[f] != w[f]  return v[f] < w[f] end
+        end
+        return v[3]
+    end
+    static def battery(raw)                     # BatteryPercentageRemaining as reported -> DPT 5.001
+        var Z = zb_remote
+        var e = Z.model()
+        var half = raw
+        if (e[0] & Z.F_PERCENT) != 0
+            half = raw * 2
+        elif (e[0] & Z.F_PERCENT_BELOW) != 0
+            var v = Z.version(host.dp_get(0, 'swBuildId'))
+            if v != nil && Z.below(v, e[1])  half = raw * 2 end
+        end
+        var b = bytes()
+        b.add(half >= 200 ? 255 : (half * 255 + 100) / 200, 1)
+        return b
     end
 end
 
@@ -324,17 +475,31 @@ def knx_write(ko, raw)
     end
 end
 
-# A command from a button, the battery, or (endpoint 0) whether the gateway hears the remote
+# A command from a button, the battery, or (endpoint 0) whether the gateway hears the remote and what it is
 def dp_event(ch, key, value, initial)
     var Z = zb_remote
     if ch == 0
         if key == 'availability'
             host.ko_status(Z.KO_AVAILABLE, value == true ? bytes('01') : bytes('00'), initial)
+        elif key == 'zigbeeModel' || key == 'swBuildId'
+            var bat = host.state_get('bat')         # the model or its firmware decides how the battery reads
+            if bat != nil  host.ko_status(Z.KO_BATTERY, Z.battery(bat[0]), bat[1]) end
+        end
+        return
+    end
+    if key == 'batteryPercentageRemaining'
+        if type(value) == 'int' && value >= 0 && value < 255
+            host.state_set('bat', [value, initial])
+            host.ko_status(Z.KO_BATTERY, Z.battery(value), initial)
         end
         return
     end
     if key == 'battery'
-        if value != nil  host.ko_status(Z.KO_BATTERY, Z.byte(value), initial) end
+        if type(value) == 'int' || type(value) == 'real'
+            var b = bytes()
+            b.add(value >= 100 ? 255 : value <= 0 ? 0 : int((value * 255 + 50) / 100), 1)
+            host.ko_status(Z.KO_BATTERY, b, initial)
+        end
         return
     end
     if key != 'zcl.cmd' || value == nil  return end
@@ -363,8 +528,8 @@ def dp_event(ch, key, value, initial)
             host.ko_send(Z.KO_VALUE, b)
         elif c == 0x01 || c == 0x05
             Z.dim(up ? 0x09 : 0x01)
-        elif c == 0x02 || c == 0x06
-            Z.dim(up ? 0x0C : 0x04)
+        elif (c == 0x02 || c == 0x06) && size(p) > 1
+            if p[1] > 0  Z.dim((up ? 0x08 : 0x00) | Z.step_code(p[1])) end
         elif c == 0x03 || c == 0x07
             Z.dim(0x00)
         end
@@ -393,51 +558,64 @@ def build_remote(members: list) -> tuple[dict, str]:
         {"number": 1, "name": "Switch", "text": "Switch", "function": "On/Off", "size": "1 Bit", "flags": "CT",
          "dpt": "1.001", "zigbee": "On/Off commands of the remote: on, off, toggle (opposite of KO 5)"},
         {"number": 2, "name": "Dimming", "text": "Relative dimming", "function": "Brighter/Darker", "size": "4 Bit",
-         "flags": "CT", "dpt": "3.007", "zigbee": "Level move -> start brighter/darker (100 %), stop -> stop, step -> 12.5 %"},
+         "flags": "CT", "dpt": "3.007",
+         "zigbee": "Level move -> start brighter/darker (step code 1, 100 %), stop -> stop (0), step -> the step code "
+                   "nearest to the step size (1/2^(code-1) of 254)"},
         {"number": 3, "name": "Value", "text": "Brightness value", "function": "Value", "size": "1 Byte",
          "flags": "CT", "dpt": "5.001", "zigbee": "Level move to level"},
         {"number": 4, "name": "Battery", "text": "Battery", "function": "Percent", "size": "1 Byte", "flags": "CRT",
-         "dpt": "5.001", "zigbee": "battery (BatteryPercentageRemaining / 2)"},
+         "dpt": "5.001",
+         "zigbee": "batteryPercentageRemaining (half percent by ZCL; percent for the models with flag 2, and with flag 4 "
+                   "below the firmware version of the entry, read from swBuildId)"},
         {"number": 5, "name": "SwitchStatus", "text": "Switch status (for toggle)", "function": "On/Off",
          "size": "1 Bit", "flags": "CWU", "dpt": "1.001", "zigbee": "state of the switched load, so toggle sends the opposite"},
+        avail_object(spec, sleepy=True),
     ]
-    objects.append(avail_object(len(objects) + 1))
     table = {}
     for r, entry in sorted(members, key=lambda m: m[0]["model"]):
         for zm in r.get("zigbeeModel", []):
             table[zm] = entry
+    default_entry = [R_BATTERY, []]
     be = (BERRY_REMOTE.replace("@GEN@", GEN).replace("@CLASS@", spec["dir"]).replace("@NMODELS@", str(len(members)))
           .replace("@Z2M@", Z2M_VERSION).replace("@MODELS@", berry_value(table))
+          .replace("@DEFAULT_ENTRY@", berry_value(default_entry)).replace("@STEP_LIMITS@", berry_value(STEP_LIMITS))
           .replace("@POFF@", "".join(f"    static P_{k.upper()} = {v}\n" for k, v in poff.items()))
-          .replace("@SEG@", str(seg)).replace("@KO_AVAIL@", str(objects[-1]["number"])))
+          .replace("@SEG@", str(seg)).replace("@KO_AVAIL@", str(spec["available"])))
     left = sorted({w.strip("()[],") for w in be.split() if w.strip("()[],").startswith("@") and w.strip("()[],").endswith("@")})
     if left:
         raise GenError(f"remote: placeholders left in the Berry: {left}")
     manifest = {
         "schema": "knxgw-template/0",
         "id": "zigbee.class.remote",
-        "version": spec["tpl"],
+        "version": spec["version"],
         "title": spec["name"] + " as a KNX push button",
         "radio": "zigbee",
         "match": {"class": "remote", "zigbeeModel": sorted(table)},
         "behaviour": {"language": "berry", "file": f"{spec['dir']}.be"},
         "datapoints": {
-            "_doc": "<endpoint>.<property>; endpoint 0 = device identity and availability (gateway: true/false). "
-                    "zcl.cmd: 'cluster,command,payload' in hex, a command the remote sent to the gateway (gateway "
-                    "zlink.c). battery: percent.",
-            "write": [], "events": ["0.zigbeeModel", "0.availability", f"{ep}.zcl.cmd", f"{ep}.battery"], "master": []},
+            "_doc": "<endpoint>.<property>; endpoint 0 = device identity (zigbeeModel, swBuildId: Basic SWBuildID) and "
+                    "availability (gateway: true/false). zcl.cmd: 'cluster,command,payload' in hex, a command the remote "
+                    "sent to the gateway (gateway zlink.c). batteryPercentageRemaining: the ZCL attribute as reported, "
+                    "0..254 (nothing for 0xFF); battery: percent, from gateways that convert it themselves.",
+            "write": [],
+            "events": ["0.zigbeeModel", "0.swBuildId", "0.availability", f"{ep}.zcl.cmd",
+                       f"{ep}.batteryPercentageRemaining", f"{ep}.battery"],
+            "master": []},
         "products": products_of(members),
         "generated": {"by": GEN, "from": f"zigbee-herdsman-converters {Z2M_VERSION}", "models": len(members)},
         "sources": [
             f"zigbee-herdsman-converters {Z2M_VERSION} (MIT, (c) Koen Kanters), distilled by distill/dump_z2m.cjs (facts only)",
+            f"zigbee-herdsman-converters {Z2M_VERSION} lib/ikea.ts ikeaBattery() and devices/ikea.ts: which models report "
+            "BatteryPercentageRemaining in percent (model table flags 2 and 4)",
             "ZCL: On/Off cluster commands 0x00-0x02, 0x40-0x42; Level Control commands 0x00-0x07",
-            "KNX DPT 3.007 (dimming control), 5.001, 1.001",
+            "KNX DPT 3.007 (dimming control: step code 1..7 = 1/2^(code-1) of the range, 0 = break), 5.001, 1.001",
         ],
         "open": [
             "The gateway binds the remote's On/Off and Level clusters to itself when it links the device; a sleeping "
             "remote may miss that and needs a button press while the gateway asks",
             "Long press and release of the IKEA remotes map to move and stop as Zigbee2MQTT reads them; not seen on air yet",
             "Remotes with arrows, scenes or double clicks are not in this class",
+            "Which models report the battery in percent is a table from the Zigbee2MQTT definitions; not checked on a device",
         ],
         "knx": knx_part(spec, objects, ptypes, seg, plist),
     }
@@ -451,9 +629,9 @@ BERRY_SWITCH = r'''# SPDX-License-Identifier: GPL-3.0-only
 # (zigbee-herdsman-converters @Z2M@, MIT, facts only). Change the generator, not this file.
 #
 # KNX: one switched output, like FB Light Switching Actuator Basic (KNX Standard 07_20_02): Switch On Off
-# (KO 1), Info On Off (KO 2); KO 3 starts the device's identify effect if it has one; KO 4 Available: the
-# gateway reaches the device. Parameters: behaviour after mains power returns (models with flag 1), child lock
-# (models with flag 16).
+# (KO 1), Info On Off (KO 2); KO 3 (DPT 1.017 trigger: 0 and 1 alike) starts the device's identify effect if it has
+# one; KO 4 Available: the gateway reaches the device. Parameters: behaviour after mains power returns (models with
+# flag 1), child lock (models with flag 16).
 # Zigbee: Zigbee2MQTT properties on endpoint 1; endpoint 0 carries the identity (zigbeeModel) and the gateway's
 # availability (true/false). What differs between models is in MODELS, looked up by zigbeeModel: [flags, child
 # lock write]; flags 1 power-on behaviour, 2 identify, 16 child lock. The child lock is written as "zcl.write"
@@ -507,7 +685,7 @@ def knx_write(ko, raw)
     if ko == Z.KO_SWITCH && raw.size() == 1
         host.dp_set(Z.EP, 'state', (raw[0] & 1) != 0 ? 'ON' : 'OFF')
     elif ko == Z.KO_IDENTIFY && raw.size() == 1
-        if (raw[0] & 1) != 0 && Z.has(Z.F_IDENTIFY)  host.dp_set(Z.EP, 'identify', 'identify') end
+        if Z.has(Z.F_IDENTIFY)  host.dp_set(Z.EP, 'identify', 'identify') end
     else
         host.log('ko_write_ignored', {'ko': ko, 'value': raw.tohex()})
     end
@@ -550,9 +728,13 @@ BERRY = r'''# SPDX-License-Identifier: GPL-3.0-only
 #
 # KNX: FB Dimming Actuator Basic (KNX Standard 07_20_02, p. 37 and 55). Inputs Switch On Off (KO 1),
 # Relative Setvalue Control (KO 2), Absolute Setvalue Control (KO 3); outputs Info On Off (KO 4) and
-# Actual Dimming Value (KO 5, 0 while off); KO 6 starts the lamp's identify effect if it has one. The
-# parameters switch-on value (OSV), memory function (MF), minimum/maximum value (MIN_SV, MAX_SV) and
-# relative off (ROE) are carried out here. The last object (KO @KO_AVAIL@) is Available: the gateway reaches the lamp.
+# Actual Dimming Value (KO 5, 0 while off); KO 6 (DPT 1.017 trigger: 0 and 1 alike) starts the lamp's identify
+# effect if it has one. The parameters switch-on value (OSV), memory function (MF), minimum/maximum value (MIN_SV,
+# MAX_SV) and relative off (ROE) are carried out here. KO @KO_AVAIL@ is Available: the gateway reaches the lamp.
+# Relative dimming (DPT 3.007) as in the state tables of FB Dimming Actuator Basic (p. 44-46): step code 1..7 moves
+# the set value by 1/2^(code-1) of 0..100 % within MIN_SV..MAX_SV at the dimming rate, 0 stops where the lamp is.
+# While a command runs, the next step counts from its target; then from what the lamp reports. Up from off switches
+# on at MIN_SV; down from off does nothing; with ROE a step down below MIN_SV dims to off.
 # Zigbee: Zigbee2MQTT properties on endpoint 1; endpoint 0 carries the identity (zigbeeModel) and the
 # gateway's availability (true/false).
 # One application serves every model of the class. What differs between models is in MODELS,
@@ -569,6 +751,7 @@ class zb_light
     static KO_AVAILABLE = @KO_AVAIL@
     static EP = 1
     static BRI_MAX = 254
+    static SETTLE_MS = 1000                     # the gateway reads the lamp back 0.7 s after a command has run
     static POWER_ON = ['off', 'on', 'toggle', 'previous']
     static START = ['minimum', 'previous']
     static F_LEVEL_START = 1
@@ -611,16 +794,76 @@ class zb_light
             host.dp_set(zb_light.EP, 'transition', real(c['trans']) / 10)
         end
     end
+    static def level()                          # set value in brightness steps, 0 = off: the target of the last command
+        var Z = zb_light                        # while it runs and until the lamp has reported after it, else the report
+        var m = host.state_get('lv')
+        if m != nil && host.now_ms() < m[2] + m[3] + Z.SETTLE_MS  return m[1] end
+        if host.dp_get(Z.EP, 'state') != 'ON'  return 0 end
+        var b = host.dp_get(Z.EP, 'brightness')
+        return b == nil ? 0 : b
+    end
+    static def moving(key, at, to, tenths)      # remember a command: from, target, start, duration in ms
+        host.state_set(key, [at, to, host.now_ms(), tenths * 100])
+    end
+    static def stopped(key)                     # a stop: where the running command has got to counts as the set value
+        var m = host.state_get(key)
+        var now = host.now_ms()
+        if m != nil && now < m[2] + m[3]
+            var at = m[0] + (m[1] - m[0]) * (now - m[2]) / m[3]
+            host.state_set(key, [at, at, now, 0])
+        end
+    end
     static def set_bri(c, bri)                  # within MIN_SV..MAX_SV, then on
         var Z = zb_light
         var lo = Z.pct_to_bri(c['min'])
         var hi = Z.pct_to_bri(c['max'])
+        var to = Z.clamp(bri, lo, hi)
+        Z.moving('lv', Z.level(), to, c['trans'])
         Z.transition(c)
-        host.dp_set(Z.EP, 'brightness', Z.clamp(bri, lo, hi))
+        host.dp_set(Z.EP, 'brightness', to)
     end
     static def off(c)
-        zb_light.transition(c)
-        host.dp_set(zb_light.EP, 'state', 'OFF')
+        var Z = zb_light
+        Z.moving('lv', Z.level(), 0, c['trans'])
+        Z.transition(c)
+        host.dp_set(Z.EP, 'state', 'OFF')
+    end
+    static def step(c, raw)                     # KO 2, DPT 3.007
+        var Z = zb_light
+        var code = raw & 0x07
+        if code == 0
+            Z.stopped('lv')
+            host.dp_set(Z.EP, c['roe'] ? 'brightness_move_onoff' : 'brightness_move', 'stop')
+            return
+        end
+        var lo = Z.pct_to_bri(c['min'])
+        var hi = Z.pct_to_bri(c['max'])
+        var d = (Z.BRI_MAX * 2 / (1 << (code - 1)) + 1) / 2
+        var at = Z.level()
+        var to = 0
+        if (raw & 0x08) != 0
+            if at == 0                          # off: on at MIN_SV, then up by the step
+                host.dp_set(Z.EP, 'brightness', lo)
+                at = lo
+            end
+            to = Z.clamp(at + d, lo, hi)
+        elif at == 0
+            return
+        elif c['roe'] && at - d < lo            # ROE: below MIN_SV the lamp dims to off
+            Z.moving('lv', at, 0, (at * 10 + c['rate'] / 2) / c['rate'])
+            host.dp_set(Z.EP, 'brightness_move_onoff', -c['rate'])
+            return
+        else
+            to = Z.clamp(at - d, lo, hi)
+        end
+        if to == at
+            Z.moving('lv', at, to, 0)
+            return
+        end
+        var t = ((to > at ? to - at : at - to) * 10 + c['rate'] / 2) / c['rate']
+        Z.moving('lv', at, to, t)
+        if t > 0  host.dp_set(Z.EP, 'transition', real(t) / 10) end
+        host.dp_set(Z.EP, 'brightness', to)
     end
 @CT_HELPERS@end
 
@@ -644,16 +887,9 @@ def knx_write(ko, raw)
             Z.set_bri(c, Z.clamp((raw[0] * Z.BRI_MAX + 127) / 255, Z.model()[0], Z.BRI_MAX))
         end
     elif ko == Z.KO_DIM && raw.size() == 1
-        var key = c['roe'] ? 'brightness_move_onoff' : 'brightness_move'
-        if (raw[0] & 0x07) == 0
-            host.dp_set(Z.EP, key, 'stop')
-        elif (raw[0] & 0x08) != 0
-            host.dp_set(Z.EP, key, c['rate'])
-        else
-            host.dp_set(Z.EP, key, -c['rate'])
-        end
+        Z.step(c, raw[0])
     elif ko == Z.KO_IDENTIFY && raw.size() == 1
-        if (raw[0] & 1) != 0 && Z.has(Z.F_IDENTIFY)  host.dp_set(Z.EP, 'identify', 'identify') end
+        if Z.has(Z.F_IDENTIFY)  host.dp_set(Z.EP, 'identify', 'identify') end
 @CT_WRITE@    else
         host.log('ko_write_ignored', {'ko': ko, 'value': raw.tohex()})
     end
@@ -711,7 +947,10 @@ CT_DOC = """# Colour temperature: FB Colour Temperature Actuator (07_20_02 p. 98
 # CTSOSV, CTFMS. The usable range is the lamp's: colorTempPhysicalMin/Max as the lamp reports them
 # (ZCL 0x400B/0x400C), else the model table, else 153..500 mired. Zigbee2MQTT works in mired
 # (K = 1000000 / mired); a KNX increase (more K, cooler) is a negative color_temp_move.
-# Models with flag 8 freeze on a colour change with a transition (Zigbee2MQTT issue 18574): no transition."""
+# Relative (p. 94-95): step code 1 fades until a stop (color_temp_move, up to the lamp's own limits), 2..7 move the
+# set value by 1/2^(code-1) of MINCT..MAXCT at the colour temperature rate, 0 stops where the lamp is.
+# Models with flag 8 freeze on a colour change with a transition (Zigbee2MQTT issue 18574): no transition, a step
+# jumps."""
 
 CT_CONST = """    static KO_CT = 7
     static KO_CT_REL = 8
@@ -743,16 +982,66 @@ CT_HELPERS = """    static def k_word(p, o)                     # 16-bit paramet
         b.add(k & 0xFF, 1)
         return b
     end
-    static def set_ct(c, k)                     # within MINCT..MAXCT and the lamp; out of range on KO 10
+    static def ct_limits(c)                     # K: MINCT..MAXCT within the lamp's range
         var Z = zb_light
         var r = Z.ct_range()
         var lo = Z.clamp(c['ctmin'], Z.mired_to_k(r[1]), Z.mired_to_k(r[0]))
         var hi = Z.clamp(c['ctmax'], Z.mired_to_k(r[1]), Z.mired_to_k(r[0]))
         if lo > hi  lo = hi end
-        var kk = Z.clamp(k, lo, hi)
+        return [lo, hi]
+    end
+    static def ct_now()                         # set value in K: the target of the last command while it runs and until
+        var Z = zb_light                        # the lamp has reported after it, else the report; nil: not known
+        var m = host.state_get('ctm')
+        if m != nil && host.now_ms() < m[2] + m[3] + Z.SETTLE_MS  return m[1] end
+        var v = host.dp_get(Z.EP, 'color_temp')
+        return v != nil && v > 0 ? Z.mired_to_k(v) : nil
+    end
+    static def set_ct(c, k)                     # within MINCT..MAXCT and the lamp; out of range on KO 10
+        var Z = zb_light
+        var r = Z.ct_range()
+        var lim = Z.ct_limits(c)
+        var kk = Z.clamp(k, lim[0], lim[1])
         host.ko_status(Z.KO_CT_RANGE, kk != k ? bytes('01') : bytes('00'), false)
-        if c['ctfade'] && !Z.has(Z.F_FREEZE)  Z.transition(c) end
+        var fade = c['ctfade'] && !Z.has(Z.F_FREEZE)
+        Z.moving('ctm', kk, kk, fade ? c['trans'] : 0)
+        if fade  Z.transition(c) end
         host.dp_set(Z.EP, 'color_temp', Z.clamp((1000000 + kk / 2) / kk, r[0], r[1]))
+    end
+    static def ct_step(c, raw)                  # KO 8, DPT 3.007: up = more K, fewer mired
+        var Z = zb_light
+        var code = raw & 0x07
+        var up = (raw & 0x08) != 0
+        var r = Z.ct_range()
+        if code == 0
+            Z.stopped('ctm')
+            host.dp_set(Z.EP, 'color_temp_move', 'stop')
+            return
+        end
+        var k = Z.ct_now()
+        if code == 1                            # until a stop or the lamp's limit
+            if k != nil
+                var a = Z.clamp((1000000 + k / 2) / k, r[0], r[1])
+                var b = up ? r[0] : r[1]
+                Z.moving('ctm', k, Z.mired_to_k(b), ((a > b ? a - b : b - a) * 10 + c['ctrate'] / 2) / c['ctrate'])
+            end
+            host.dp_set(Z.EP, 'color_temp_move', up ? -c['ctrate'] : c['ctrate'])
+            return
+        end
+        var lim = Z.ct_limits(c)
+        if k == nil  k = (lim[0] + lim[1]) / 2 end
+        var d = ((lim[1] - lim[0]) * 2 / (1 << (code - 1)) + 1) / 2
+        var kk = Z.clamp(up ? k + d : k - d, lim[0], lim[1])
+        if kk == k
+            Z.moving('ctm', k, k, 0)
+            return
+        end
+        var a = Z.clamp((1000000 + k / 2) / k, r[0], r[1])
+        var b = Z.clamp((1000000 + kk / 2) / kk, r[0], r[1])
+        var t = Z.has(Z.F_FREEZE) ? 0 : ((a > b ? a - b : b - a) * 10 + c['ctrate'] / 2) / c['ctrate']
+        Z.moving('ctm', k, kk, t)
+        if t > 0  host.dp_set(Z.EP, 'transition', real(t) / 10) end
+        host.dp_set(Z.EP, 'color_temp', b)
     end
 """
 
@@ -770,13 +1059,7 @@ CT_WRITE = """    elif ko == Z.KO_CT && raw.size() == 2
             Z.set_ct(c, k)
         end
     elif ko == Z.KO_CT_REL && raw.size() == 1
-        if (raw[0] & 0x07) == 0
-            host.dp_set(Z.EP, 'color_temp_move', 'stop')
-        elif (raw[0] & 0x08) != 0
-            host.dp_set(Z.EP, 'color_temp_move', -c['ctrate'])
-        else
-            host.dp_set(Z.EP, 'color_temp_move', c['ctrate'])
-        end
+        Z.ct_step(c, raw[0])
 """
 
 CT_EVENT = """    elif key == 'color_temp'
@@ -864,9 +1147,9 @@ def build_switch(members: list) -> tuple[dict, str]:
         {"number": 2, "name": "SwitchStatus", "text": "Switch status", "function": "On/Off", "size": "1 Bit",
          "flags": "CRT", "dpt": "1.001", "zigbee": "Info On Off <- state"},
         {"number": 3, "name": "Identify", "text": "Identify", "function": "Trigger", "size": "1 Bit", "flags": "CW",
-         "dpt": "1.017", "zigbee": "identify, models with flag 2"},
+         "dpt": "1.017", "zigbee": "identify on 0 and 1 alike (DPT 1.017 trigger), models with flag 2"},
+        avail_object(spec),
     ]
-    objects.append(avail_object(len(objects) + 1))
     table = {}
     for r, entry in sorted(members, key=lambda m: m[0]["model"]):
         for zm in r.get("zigbeeModel", []):
@@ -876,14 +1159,14 @@ def build_switch(members: list) -> tuple[dict, str]:
           .replace("@Z2M@", Z2M_VERSION).replace("@MODELS@", berry_value(table))
           .replace("@DEFAULT_ENTRY@", berry_value(default_entry))
           .replace("@POFF@", "".join(f"    static P_{k.upper()} = {v}\n" for k, v in poff.items()))
-          .replace("@SEG@", str(seg)).replace("@KO_AVAIL@", str(objects[-1]["number"])))
+          .replace("@SEG@", str(seg)).replace("@KO_AVAIL@", str(spec["available"])))
     left = sorted({w.strip("()[],") for w in be.split() if w.strip("()[],").startswith("@") and w.strip("()[],").endswith("@")})
     if left:
         raise GenError(f"switch: placeholders left in the Berry: {left}")
     manifest = {
         "schema": "knxgw-template/0",
         "id": "zigbee.class.switch",
-        "version": spec["tpl"],
+        "version": spec["version"],
         "title": spec["name"] + " as a KNX switching actuator",
         "radio": "zigbee",
         "match": {"class": "switch", "zigbeeModel": sorted(table)},
@@ -956,7 +1239,9 @@ def build(cls: str, members: list) -> tuple[dict, str]:
         {"number": 1, "name": "Switch", "text": "Switch", "function": "On/Off", "size": "1 Bit", "flags": "CW",
          "dpt": "1.001", "zigbee": "FB DAB Switch On Off -> state / brightness"},
         {"number": 2, "name": "Dimming", "text": "Relative dimming", "function": "Brighter/Darker", "size": "4 Bit",
-         "flags": "CW", "dpt": "3.007", "zigbee": "FB DAB Relative Setvalue Control -> brightness_move(_onoff)"},
+         "flags": "CW", "dpt": "3.007",
+         "zigbee": "FB DAB Relative Setvalue Control: step code 1..7 -> brightness by 1/2^(code-1) of 0..100 % at the "
+                   "dimming rate, 0 -> brightness_move stop; ROE below MIN_SV -> brightness_move_onoff"},
         {"number": 3, "name": "Value", "text": "Brightness value", "function": "Value", "size": "1 Byte",
          "flags": "CW", "dpt": "5.001", "zigbee": "FB DAB Absolute Setvalue Control -> brightness, 0 = off"},
         {"number": 4, "name": "SwitchStatus", "text": "Switch status", "function": "On/Off", "size": "1 Bit",
@@ -964,7 +1249,9 @@ def build(cls: str, members: list) -> tuple[dict, str]:
         {"number": 5, "name": "ValueStatus", "text": "Brightness status", "function": "Value", "size": "1 Byte",
          "flags": "CRT", "dpt": "5.001", "zigbee": "FB DAB Actual Dimming Value <- brightness, 0 while off"},
         {"number": 6, "name": "Identify", "text": "Identify", "function": "Trigger", "size": "1 Bit", "flags": "CW",
-         "dpt": "1.017", "zigbee": "identify, models with flag 2 (manufacturer-specific object, not in FB DAB)"},
+         "dpt": "1.017",
+         "zigbee": "identify on 0 and 1 alike (DPT 1.017 trigger), models with flag 2 (manufacturer-specific object, not in "
+                   "FB DAB)"},
     ]
     write = [f"{ep}.state", f"{ep}.brightness", f"{ep}.brightness_move", f"{ep}.brightness_move_onoff",
              f"{ep}.transition", f"{ep}.power_on_behavior", f"{ep}.level_config.current_level_startup",
@@ -1000,7 +1287,8 @@ def build(cls: str, members: list) -> tuple[dict, str]:
              "zigbee": "FB CTA Absolute Colour Temperature Control -> color_temp (mired = 1000000 / K)"},
             {"number": 8, "name": "ColourTemperatureRelative", "text": "Relative colour temperature",
              "function": "Cooler/Warmer", "size": "4 Bit", "flags": "CW", "dpt": "3.007",
-             "zigbee": "FB CTA Relative Setvalue Control Colour Temperature -> color_temp_move (increase = negative)"},
+             "zigbee": "FB CTA Relative Setvalue Control Colour Temperature: step code 1 -> color_temp_move (increase = "
+                       "negative), 2..7 -> color_temp by 1/2^(code-1) of MINCT..MAXCT, 0 -> stop"},
             {"number": 9, "name": "ColourTemperatureStatus", "text": "Colour temperature status", "function": "Kelvin",
              "size": "2 Bytes", "flags": "CRT", "dpt": "7.600", "zigbee": "FB CTA Current Colour Temperature <- color_temp"},
             {"number": 10, "name": "ColourTemperatureOutOfRange", "text": "Colour temperature out of range",
@@ -1013,7 +1301,7 @@ def build(cls: str, members: list) -> tuple[dict, str]:
                          "ctfade": False})
         parts.update({"CT_DOC": CT_DOC, "CT_CONST": CT_CONST, "CT_HELPERS": CT_HELPERS, "CT_ON": CT_ON,
                       "CT_WRITE": CT_WRITE, "CT_EVENT": CT_EVENT, "CT_CFG": CT_CFG, "CT_PARAMS": CT_PARAMS})
-    objects.append(avail_object(len(objects) + 1))
+    objects.append(avail_object(spec))
     events.insert(1, "0.availability")
     seg = at[0]
     table = {}
@@ -1030,7 +1318,7 @@ def build(cls: str, members: list) -> tuple[dict, str]:
           .replace("@POFF@", "".join(f"    static P_{k.upper()} = {v}\n" for k, v in poff.items()))
           .replace("@SEG@", str(seg)).replace("@MD_MIN@", str(MIRED_DEFAULT[0])).replace("@MD_MAX@", str(MIRED_DEFAULT[1]))
           .replace("@KMIN@", str(K_RANGE[0])).replace("@KMAX@", str(K_RANGE[1]))
-          .replace("@KO_AVAIL@", str(objects[-1]["number"])))
+          .replace("@KO_AVAIL@", str(spec["available"])))
     left = sorted({w.strip("()[],") for w in be.split() if w.strip("()[],").startswith("@") and w.strip("()[],").endswith("@")})
     if left:
         raise GenError(f"{cls}: placeholders left in the Berry: {left}")
@@ -1038,7 +1326,7 @@ def build(cls: str, members: list) -> tuple[dict, str]:
     manifest = {
         "schema": "knxgw-template/0",
         "id": f"zigbee.class.{cls}",
-        "version": spec["tpl"],
+        "version": spec["version"],
         "title": spec["name"] + " as a KNX " + ("dimming actuator with colour temperature" if ct else "dimming actuator"),
         "radio": "zigbee",
         "match": {"class": cls, "zigbeeModel": sorted(table)},
@@ -1052,13 +1340,17 @@ def build(cls: str, members: list) -> tuple[dict, str]:
         "generated": {"by": GEN, "from": f"zigbee-herdsman-converters {Z2M_VERSION}", "models": len(members)},
         "sources": [
             f"zigbee-herdsman-converters {Z2M_VERSION} (MIT, (c) Koen Kanters), distilled by distill/dump_z2m.cjs (facts only)",
-            "KNX Standard v3.0.0, 07_20_02 Lighting Actuators: FB Dimming Actuator Basic p. 37, 55" +
-            ("; FB Colour Temperature Actuator p. 98-99; 03_07_02 p. 177 (DPT 20.608)" if ct else ""),
+            "KNX Standard v3.0.0, 07_20_02 Lighting Actuators: FB Dimming Actuator Basic p. 37, 55, state tables p. 44-46" +
+            ("; FB Colour Temperature Actuator p. 94-95, 98-99; 03_07_02 p. 177 (DPT 20.608)" if ct else "") +
+            "; 03_07_02 p. 29 (DPT 3.007)",
             "zigbee-herdsman cluster lightingColorCtrl: colorTempPhysicalMin 0x400B, colorTempPhysicalMax 0x400C",
         ],
-        "open": [
-            "One product per class in the producer input: OpenKNXproducer expands a single product (ProcessInclude.cs)",
-            "MIN_SV/MAX_SV and MINCT/MAXCT are not enforced during relative dimming",
+        "open": ([
+            "MINCT/MAXCT do not limit relative colour temperature with step code 1: color_temp_move runs to the lamp's "
+            "own limits or a stop",
+            "A stop of relative colour temperature (Move Color Temperature, stop) ends a Move to Color Temperature still "
+            "running on IKEA white spectrum lamps (Zigbee2MQTT lib/ikea.ts relies on it); other lamps not checked",
+        ] if ct else []) + [
             "Parameters live in host.state; after a VM restart the defaults apply until the next params call",
             "The radio adapter must deliver 0.zigbeeModel (and colorTempPhysicalMin/Max) as datapoints",
         ],

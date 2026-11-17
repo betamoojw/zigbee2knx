@@ -106,23 +106,29 @@ class Checks:
         return 1 if failed else 0
 
 
-def rebuild_checks(check, tpl: Template, app_version: int, replaces: list, objects: int):
-    """What every class has since its current application version: the Berry as embedded, no bus current, the
-    application version and the versions it replaces, the object "Available" last."""
+def rebuild_checks(check, tpl: Template, app_version: int, replaces: list, available: int, section: tuple):
+    """What every class has since its current application version: the Berry as embedded, no bus current (and the
+    hardware data marked as changed), the application version and the versions it replaces, the template version equal
+    to it, the object "Available" with the number the class keeps, the catalog section of the class."""
     knx = tpl.manifest["knx"]
     check("template file is the Berry as embedded", tpl.file_is_embedded, None)
     check("embedded Berry has no comments, indentation or blank lines",
           shorten_berry(tpl.embedded) == tpl.embedded, None)
-    check("BusCurrent 0 mA", knx["hardware"]["bus_current_ma"] == 0, knx["hardware"])
+    check("BusCurrent 0 mA, NonRegRelevantDataVersion 1",
+          knx["hardware"]["bus_current_ma"] == 0 and knx["hardware"].get("nonreg_version") == 1, knx["hardware"])
     app = knx["application"]
     check(f"application version {app_version}, replaces {replaces}",
           app["version"] == app_version and app["replaces"] == replaces, app)
-    o = knx["objects"][-1]
-    check(f"object {objects} 'Available' behind the others: 1 bit, DPT 1.002, flags C R T",
-          [x["number"] for x in knx["objects"]] == list(range(1, objects + 1)) and o["name"] == "Available" and
-          o["size"] == "1 Bit" and o["dpt"] == "1.002" and o["flags"] == "CRT", o)
+    check(f"template version = application version ({app_version})", tpl.manifest["version"] == app["version"],
+          tpl.manifest["version"])
+    o = [x for x in knx["objects"] if x["number"] == available]
+    check(f"object {available} 'Available': 1 bit, DPT 1.002, flags C R T",
+          len(o) == 1 and o[0]["name"] == "Available" and o[0]["size"] == "1 Bit" and o[0]["dpt"] == "1.002" and
+          o[0]["flags"] == "CRT" and len({x["number"] for x in knx["objects"]}) == len(knx["objects"]), o)
     check("0.availability declared as an event", "0.availability" in tpl.manifest["datapoints"]["events"],
           tpl.manifest["datapoints"]["events"])
+    secs = [(s.get("number"), s.get("name")) for s in knx["catalog"].get("sections", [])]
+    check(f"catalog: Zigbee2KNX > {section[1]}", secs == [("Zigbee2KNX", "Zigbee2KNX"), section], knx["catalog"])
 
 
 def availability_checks(check, tpl: Template, vm: Vm, inst: int):

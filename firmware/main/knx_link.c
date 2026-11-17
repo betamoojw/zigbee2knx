@@ -10,7 +10,9 @@
 //
 // Sending: a frame is written as U_L_DataStart/Cont/End pairs (p39) without blocking the receive path, then the
 // link waits for L_Data.con (p40). The chip returns every octet it sends; such a frame is passed on marked as own,
-// which is how a group telegram of one virtual device reaches the other virtual devices.
+// which is how a group telegram of one virtual device reaches the other virtual devices. A frame given up without a
+// confirmation (no L_Data.con in time, an error flag of the chip while it went out) is reported back (knx_link_lost):
+// as far as the link knows it never reached the bus, and only the device server knows whether to send it again.
 //
 // Extended frames (L_Data_Extended, 03_02_02 2.2.5) are received, acknowledged and passed on like standard frames as
 // long as their TPDU fits KNX_TPDU_MAX and their extended frame format (EFF, low nibble of the extended control field)
@@ -67,12 +69,13 @@ static volatile int s_nia, s_nga;
 static volatile bool s_bcast;
 static TaskHandle_t s_task;
 static QueueHandle_t s_txq;
-static knx_sink_t s_sink;
+static knx_sink_t s_sink, s_lost;
 
 static struct {
     uint32_t bytes, frames, ext, ext_long, bad_cs, trunc, reset_ind, state_ind, frame_state, bus_ack, other;
     uint32_t acks, ack_late, ack_min_us, ack_max_us;
     uint32_t tx, tx_ack, tx_noack, tx_timeout, tx_full, tx_err, own, dup, passed, ext_passed, tx_ext, ext_other;
+    uint32_t tx_lost;        // frames given up and reported back (knx_link_lost)
     uint8_t last_state;
     uint16_t last_src, last_dst;
     bool last_group;
@@ -106,6 +109,25 @@ static bool same_as_tx(const txf_t *t, const uint8_t *f, int n)
     }
     int end = n < t->n ? n : t->n - 1;   // without the checksum
     return memcmp(f + 1, t->f + 1, (size_t)(end - 1)) == 0;
+}
+
+// A frame of ours given up: back to the device server as the frame it was (own set), in the link task
+static void given_up(const txf_t *t)
+{
+    bool ext = !(t->f[0] & 0x80);
+    int h = ext ? 7 : 6;
+    if (!s_lost || t->n < h + 2) {
+        return;
+    }
+    knx_frame_t k = {.src = ext ? (uint16_t)(t->f[2] << 8 | t->f[3]) : (uint16_t)(t->f[1] << 8 | t->f[2]),
+                     .dst = ext ? (uint16_t)(t->f[4] << 8 | t->f[5]) : (uint16_t)(t->f[3] << 8 | t->f[4]),
+                     .group = ext ? (t->f[1] & 0x80) : (t->f[5] & 0x80),
+                     .own = true,
+                     .ext = ext,
+                     .len = (uint8_t)(t->n - h - 1)};
+    memcpy(k.tpdu, t->f + h, k.len);
+    st.tx_lost++;
+    s_lost(&k);
 }
 
 static void knx_task(void *arg)
@@ -177,6 +199,7 @@ static void knx_task(void *arg)
             tx_next = now + TX_PAIR_US;
         } else if (txs == TX_WAIT_CON && now > tx_deadline) {
             st.tx_timeout++;
+            given_up(&cur);
             txs = TX_IDLE;
         }
         // Octets that came in while this task was not reading have no arrival time of their own: the gap rule
@@ -244,6 +267,7 @@ static void knx_task(void *arg)
                 // sc, re, te, pe (datasheet p. 33-34); bit 3 is the temperature warning and says nothing about a frame
                 if ((b & 0xF0) && txs != TX_IDLE) {   // an error flag while a frame is on its way: give it up
                     st.tx_err++;
+                    given_up(&cur);
                     txs = TX_IDLE;
                 }
             } else if (b == 0xCC || b == 0x0C || b == 0xC0) {   // ACK / NACK / BUSY seen on the bus
@@ -347,6 +371,11 @@ void knx_link_sink(knx_sink_t sink)
     s_sink = sink;
 }
 
+void knx_link_lost(knx_sink_t lost)
+{
+    s_lost = lost;
+}
+
 bool knx_link_send(uint16_t src, uint16_t dst, bool group, uint8_t prio, const uint8_t *tpdu, uint8_t len)
 {
     if (!s_txq || !tpdu || len < 1 || len > KNX_TPDU_MAX) {
@@ -441,9 +470,9 @@ void knx_link_print(void)
            (unsigned long)st.acks,
            (unsigned long)(st.acks ? st.ack_min_us : 0), (unsigned long)st.ack_max_us, (unsigned long)st.ack_late);
     printf("knx tx: %lu frames (%lu extended), %lu acknowledged, %lu not acknowledged, %lu without L_Data.con, %lu chip "
-           "errors, %lu queue full; task stack free %u B\n",
+           "errors (%lu given up and reported back), %lu queue full; task stack free %u B\n",
            (unsigned long)st.tx, (unsigned long)st.tx_ext, (unsigned long)st.tx_ack, (unsigned long)st.tx_noack, (unsigned long)st.tx_timeout,
-           (unsigned long)st.tx_err, (unsigned long)st.tx_full,
+           (unsigned long)st.tx_err, (unsigned long)st.tx_lost, (unsigned long)st.tx_full,
            s_task ? (unsigned)uxTaskGetStackHighWaterMark(s_task) * sizeof(StackType_t) : 0);
 }
 

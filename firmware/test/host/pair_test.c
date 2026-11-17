@@ -60,15 +60,16 @@ static void later(int ms)
 }
 
 static int g_verbose;
+static char g_lastw[400];   // the last warning, as the console shows it
 void stub_log(char lvl, const char *tag, const char *fmt, ...)
 {
-    if (!g_verbose) return;
+    char b[400];
     va_list ap;
     va_start(ap, fmt);
-    printf("    [%c %s] ", lvl, tag);
-    vprintf(fmt, ap);
-    printf("\n");
+    vsnprintf(b, sizeof b, fmt, ap);
     va_end(ap);
+    if (lvl == 'W') snprintf(g_lastw, sizeof g_lastw, "%s", b);
+    if (g_verbose) printf("    [%c %s] %s\n", lvl, tag, b);
 }
 
 // ---- flash: the keys of one namespace
@@ -175,6 +176,7 @@ bool vdev_seen(uint16_t zaddr, const uint8_t ieee[8])
     return false;
 }
 bool vdev_ieee(int i, uint8_t ieee[8]) { if (!ok(i) || !g_d[i].has_ieee) return false; memcpy(ieee, g_d[i].ieee, 8); return true; }
+int vdev_rx_on(int i) { (void)i; return -1; }   // the device record knows nothing: pair.c decides from the announce
 bool vdev_zigbee(int i, uint16_t *zaddr, uint8_t *ep) { if (!ok(i) || g_d[i].zaddr == 0xFFFF) return false; *zaddr = g_d[i].zaddr; *ep = 1; return true; }
 void vdev_gone(int i) { if (ok(i)) g_d[i].gone = true; }
 bool vdev_is_gone(int i) { return ok(i) && g_d[i].gone; }
@@ -188,13 +190,19 @@ void vdev_set_capability(const uint8_t ieee[8], uint8_t capability) { (void)ieee
 
 // ---- Zigbee and the gateway's message: recorded
 static uint16_t g_leave[32];
-static int g_nleave, g_open_s = -1, g_nopen;
+static int g_nleave, g_open_s = -1, g_nopen, g_nread;
 esp_err_t zb_leave(uint16_t short_addr, const uint8_t *ieee) { (void)ieee; if (g_nleave < 32) g_leave[g_nleave++] = short_addr; return ESP_OK; }
 esp_err_t zb_permit_join(uint8_t seconds) { g_open_s = seconds; g_nopen += seconds > 0; return ESP_OK; }
-esp_err_t zb_read(uint16_t dst, uint8_t ep, uint16_t cluster, const uint16_t *attrs, int n) { (void)dst; (void)ep; (void)cluster; (void)attrs; (void)n; return ESP_OK; }
+esp_err_t zb_read(uint16_t dst, uint8_t ep, uint16_t cluster, const uint16_t *attrs, int n) { (void)dst; (void)ep; (void)cluster; (void)attrs; (void)n; g_nread++; return ESP_OK; }
 esp_err_t zb_identify(uint16_t dst, uint8_t ep, uint16_t seconds) { (void)dst; (void)ep; (void)seconds; return ESP_OK; }
 esp_err_t zb_setup_reports(uint16_t dst, uint8_t ep) { (void)dst; (void)ep; return ESP_OK; }
 void zlink_discover(uint16_t addr) { (void)addr; }
+static int g_reint[16], g_nreint;   // instances the link was asked to interview again and set up anew
+bool zlink_reinterview(int inst)
+{
+    if (g_nreint < 16) g_reint[g_nreint++] = inst;
+    return inst >= 100 && inst < 100 + KNX_VDEV_MAX && g_d[inst - 100].used;
+}
 static int g_note_kind, g_nnote;
 static uint16_t g_note_ia;
 void gw_note(int kind, uint16_t ia, uint8_t err, const char *why) { (void)err; (void)why; g_note_kind = kind; g_note_ia = ia; g_nnote++; }
@@ -216,10 +224,12 @@ static void reset(void)   // devices and records as at the start; the flash keep
     s_st = ST_IDLE;
     s_slot = s_replace = -1;
     s_armed = s_have_cand = false;
-    s_probe_t = s_closed = 0;
+    s_closed = 0;
+    memset(s_qs, 0, sizeof s_qs);
     memset(s_born, 0, sizeof s_born);
     memset(s_unload, 0, sizeof s_unload);
-    s_asked_t = 0;
+    memset(s_cap_known, 0, sizeof s_cap_known);
+    memset(s_pend_t, 0, sizeof s_pend_t);
     run();
 }
 static int dev(uint16_t ia, uint16_t zaddr, const uint8_t *ieee)
@@ -325,9 +335,9 @@ int main(int argc, char **argv)
     unload(a, 0xFF04);
     later(6000);
     check("written to the flash", kv("leave", false) >= 0 && g_kv[kv("leave", false)].len == 8);
-    s_pend_n = 0;
+    s_pend_n = 0;   // what the RAM knew is gone with the restart
     memset(s_pend, 0, sizeof s_pend);
-    s_asked_t = 0;   // what the RAM knew is gone with the restart
+    memset((void *)s_pend_sa, 0, sizeof s_pend_sa);
     pend_load();
     check("read back at the start", s_pend_n == 1 && pend_find(IEEE_A) == 0);
     int before = g_nleave;
@@ -643,6 +653,179 @@ int main(int argc, char **argv)
     check("... and is removed after it", g_ndel == 1 && g_nleave == 1);
     pair_zb_left(0x7800, IEEE_B);
     run();
+
+    printf("two sources ask for an address at the same time\n");
+    reset();
+    pair_knx_probe(0x1101, 0xFF20, -1);   // the first ETS
+    pair_knx_probe(0x1102, 0xFF21, -1);   // a second one, a moment later
+    pair_knx_poll(0x1101);
+    pair_knx_poll(0x1102);
+    run();
+    pair_knx_poll(0x1101);
+    pair_knx_poll(0x1102);
+    run();
+    check("the first source is served although another one asked after it", s_st == ST_OPEN && s_src == 0x1101 &&
+          s_target == 0xFF20 && g_nopen == 1);
+    for (int i = 0; i < 3; i++) {   // the first gives up, the second reads on every 3 s
+        pair_knx_poll(0x1102);
+        later(3000);
+    }
+    check("the first gave up: its series is over and the network closed", s_st == ST_IDLE && g_open_s == 0);
+    for (int i = 0; i < 2; i++) {
+        pair_knx_poll(0x1102);
+        later(3000);
+    }
+    check("the second, still reading, is served then: the network opens for its address", s_st == ST_OPEN &&
+          s_src == 0x1102 && s_target == 0xFF21 && g_nopen == 2);
+    later(8000);
+    check("... until it gives up as well", s_st == ST_IDLE && g_open_s == 0);
+    pair_knx_probe(0x1101, 0xFF20, -1);   // the first asks again, and a third source asks meanwhile and reads once
+    pair_knx_probe(0x1103, 0xFF22, -1);
+    pair_knx_poll(0x1101);
+    pair_knx_poll(0x1103);
+    run();
+    pair_knx_poll(0x1101);
+    run();
+    check("the first is served again", s_st == ST_OPEN && s_src == 0x1101 && g_nopen == 3);
+    for (int i = 0; i < 3; i++) {   // only the first reads on
+        pair_knx_poll(0x1101);
+        later(3000);
+    }
+    later(8000);
+    check("the first gives up", s_st == ST_IDLE);
+    pair_knx_poll(0x1103);
+    run();
+    pair_knx_poll(0x1103);
+    run();
+    check("a question whose reads stopped for longer than ETS waits between two opens nothing when its turn comes",
+          s_st == ST_IDLE && g_nopen == 3);
+    pair_knx_probe(0x1104, 0xFF23, -1);
+    run();
+    later(2500);   // the first read comes too late after the question
+    pair_knx_poll(0x1104);
+    run();
+    pair_knx_poll(0x1104);
+    run();
+    check("a question counts only if its first read follows within 2 s", s_st == ST_IDLE && g_nopen == 3);
+
+    printf("a sleepy device came through the pairing window and waits; ETS asks for an address\n");
+    reset();
+    pair_window(60);
+    run();
+    pair_zb_update(0x7a00, IEEE_A, 1);
+    pair_zb_announce(0x7a00, IEEE_A, 0x80);   // receiver off when idle: a remote
+    pair_zb_authorized(0x7a00, true);
+    run();
+    int r = vdev_by_ieee(IEEE_A);
+    check("it waits without an address", r >= 0 && vdev_unbound(r) && s_st == ST_IDLE);
+    later(5 * 60 * 1000);
+    int reads = g_nread;
+    ask(0x1101, 0xFF24, -1);
+    check("it is not asked whether it is there: programming mode at once", s_st == ST_PENDING && s_slot == r &&
+          g_d[r].prog && g_nread == reads);
+    asking(0x1101, 9000);
+    check("nobody is removed or asked to leave while ETS reads", g_d[r].used && g_ndel == 0 && g_nleave == 0);
+    g_d[r].ia = 0xFF24;
+    pair_knx_assigned(r, 0xFF24);
+    run();
+    check("ETS gives it the address", s_st == ST_DONE && !vdev_unbound(r));
+    reset();
+    pair_window(60);
+    run();
+    pair_zb_update(0x7a01, IEEE_B, 1);
+    pair_zb_authorized(0x7a01, true);   // its key exchange is through before its announce
+    run();
+    pair_zb_announce(0x7a01, IEEE_B, 0x80);
+    run();
+    later(60000);
+    r = vdev_by_ieee(IEEE_B);
+    ask(0x1101, 0xFF25, -1);
+    check("an announce after the key exchange tells it as well", r >= 0 && s_st == ST_PENDING && s_slot == r);
+    reset();
+    pair_window(60);
+    run();
+    pair_zb_update(0x7a02, IEEE_A, 1);
+    pair_zb_announce(0x7a02, IEEE_A, 0x8e);   // receiver on: a lamp
+    pair_zb_authorized(0x7a02, true);
+    run();
+    later(60000);
+    ask(0x1101, 0xFF26, -1);
+    check("a waiting lamp is still asked whether it is there", s_st == ST_CHECK);
+    later(4000);
+    check("... and removed when it does not answer", g_ndel == 1);
+    pair_zb_left(0x7a02, IEEE_A);
+    run();
+
+    printf("a device asked to leave goes on sending reports\n");
+    reset();
+    a = dev(0xFF27, 0x7b00, IEEE_A);
+    unload(a, 0xFF27);
+    later(6000);
+    check("removed and asked to leave once", g_ndel == 1 && g_nleave == 1 && pend_find(IEEE_A) >= 0);
+    pair_zb_heard(0x7b00);
+    run();
+    check("a report right after the request: not asked again within 10 s", g_nleave == 1);
+    later(11000);
+    pair_zb_heard(0x7b00);
+    run();
+    check("a report later from the address it was asked at: asked again", g_nleave == 2 && g_leave[1] == 0x7b00);
+    pair_zb_heard(0x7b00);
+    pair_zb_heard(0x7b01);   // somebody else
+    run();
+    check("... not twice within 10 s, and nobody else is asked", g_nleave == 2);
+    later(11000);
+    s_pend_n = 0;   // a restart: the RAM forgets, the flash keeps the short address with the IEEE address
+    memset(s_pend, 0, sizeof s_pend);
+    memset((void *)s_pend_sa, 0, sizeof s_pend_sa);
+    pend_load();
+    pair_zb_heard(0x7b00);
+    run();
+    check("after a restart its report still gets it the request", g_nleave == 3 && g_leave[2] == 0x7b00);
+    later(11000);
+    int b = dev(0xFF28, 0x7b00, IEEE_B);   // it left unseen, and one of our devices has that short address now
+    pair_zb_heard(0x7b00);
+    run();
+    check("a frame from that address when one of our devices has it asks nobody", g_nleave == 3 && g_d[b].used);
+    vdev_del(b);
+    later(11000);
+    pair_zb_heard(0x7b00);
+    run();
+    check("... and the address no longer stands for the device that was asked", g_nleave == 3 && pend_find(IEEE_A) >= 0);
+    pair_zb_announce(0x7b05, IEEE_A, 0x8e);   // it shows up under another short address: asked there
+    run();
+    check("its announce under another address gets it the request there", g_nleave == 4 && g_leave[3] == 0x7b05);
+    later(11000);
+    static const uint8_t IEEE_C[8] = {1, 2, 3, 4, 5, 6, 7, 0xC};
+    pair_zb_update(0x7b05, IEEE_C, 1);   // a new device joins with that short address (the network is closed)
+    run();
+    later(11000);
+    pair_zb_heard(0x7b05);
+    run();
+    check("a device that joined anew with that address is not taken for it", g_nleave == 4);
+    pair_zb_left(0x7b05, IEEE_A);
+    run();
+
+    printf("one of our devices joins anew after a reset by hand\n");
+    reset();
+    a = dev(0xFF29, 0x7c00, IEEE_A);
+    ask(0x1101, 0xFF2A, -1);
+    check("ETS waits for a new device for another address: the network is open", s_st == ST_OPEN);
+    int nre = g_nreint;
+    pair_zb_update(0x7c00, IEEE_A, 1);   // joined, not a rejoin; with its old short address
+    pair_zb_announce(0x7c00, IEEE_A, 0x8e);
+    pair_zb_authorized(0x7c00, true);
+    run();
+    check("it stays with its virtual device: no new one, nobody asked to leave",
+          vdev_free_slots() == KNX_VDEV_MAX - 1 && g_d[a].used && g_nleave == 0);
+    check("it is set up again: binding, reporting, the parameters of its class", g_nreint == nre + 1 &&
+          g_reint[nre] == 100 + a);
+    check("the console says what happened", strstr(g_lastw, "joined anew") != NULL &&
+          strstr(g_lastw, "not the new device") != NULL);
+    check("the network stays open for the device ETS waits for", s_st == ST_OPEN && g_open_s == OPEN_S);
+    pair_zb_update(0x7c00, IEEE_A, 0);   // a secured rejoin is no reset
+    pair_zb_announce(0x7c00, IEEE_A, 0x8e);
+    run();
+    check("a rejoin sets nothing up anew", g_nreint == nre + 1);
 
     printf("more devices to remember than there is room for\n");
     reset();

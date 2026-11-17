@@ -2,10 +2,22 @@
   "_doc": "Public keys whose signature makes an embedded template (kgt.py, KGT2) loadable. ECDSA P-256, uncompressed point in hex; fpr = first 8 bytes of SHA-256 over the point. The private key is kept by the maintainer and is never in the repository.",
   "keys": [
     {
+      "id": "release-hw1-2026-11-17",
+      "fpr": "0831a8218bc6ae8a",
+      "p256": "045502769c5cbb4105e6db6c566486cf28e367cc91055968e583c99f685faa4c46d51bb1f0acdee0ccf6248bd300f755f529565c874f00ef03cc7b904e8ece3dbd",
+      "use": "release: signs the templates of the product files in this repository; the private key exists only inside a hardware key"
+    },
+    {
+      "id": "release-hw2-2026-11-17",
+      "fpr": "2906f425599a02b2",
+      "p256": "047ee190a0de935273657338ca4c93154ba222045b9bd766a722379d6559508a7c6fa1375875837afe122ff7837b004cc89c3f3e8b96b860251f2cb190fd48c3fa",
+      "use": "release: signs the templates of the product files in this repository; the private key exists only inside a hardware key"
+    },
+    {
       "id": "dev-2026-11-11",
       "fpr": "91a09904f3083dc6",
       "p256": "040a79976618ce3b5e1d768556d8b1032f48cdc68e5aea6e79a7c7ce5ad57ff072085da016dffb8d295dd50d1c294bf3264885878dd2dfa7288fa1751a5fab5698",
-      "use": "development key: signs the templates in this repository (M-00FA)"
+      "use": "development builds only (CONFIG_Z2K_TRUST_DEV_KEY); signed the templates of earlier development versions"
     }
   ]
 }

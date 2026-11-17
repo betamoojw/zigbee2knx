@@ -33,6 +33,10 @@ typedef struct {
 typedef void (*knx_sink_t)(const knx_frame_t *f);   // called in the link task: must not block
 void knx_link_start(void);
 void knx_link_sink(knx_sink_t sink);
+// A frame of ours the link gave up without a confirmation of the chip (no L_Data.con in time, an error flag while it
+// went out): as far as the link knows it is not on the bus. f->own is set. Not for a frame the chip sent and nobody
+// acknowledged (negative L_Data.con): that one was on the bus.
+void knx_link_lost(knx_sink_t lost);
 // len up to KNX_TPDU_MAX; more than KNX_TPDU_STD goes out as an extended frame
 bool knx_link_send(uint16_t src, uint16_t dst, bool group, uint8_t prio, const uint8_t *tpdu, uint8_t len);
 void knx_link_ack_lists(const uint16_t *ia, int nia, const uint16_t *ga, int nga, bool broadcast);
@@ -56,7 +60,13 @@ bool vdev_prog(int i, bool on);
 bool vdev_set_ia(int i, uint16_t ia);
 void vdev_dump(int i, int obj);
 void vdev_print(void);
-void vdev_ko_out(int inst, int ko, const uint8_t *v, int n, bool initial, bool status);   // from the class
+// A value from a class (zlink.c, in the Berry task): never blocks. initial: only kept for a read (the value as linking
+// found it); else a status goes on the bus when it differs from what the device holds (nothing held after a start
+// counts as a difference), any other value always.
+void vdev_ko_out(int inst, int ko, const uint8_t *v, int n, bool initial, bool status);
+// A value of one of the gateway's own objects (gw.c). Takes the device server's lock: never from a Berry hook.
+enum { VDEV_KEEP, VDEV_STATUS, VDEV_SEND };   // only kept for a read / on the bus when it changed / on the bus
+void vdev_gw_put(int ko, const uint8_t *v, int n, int how);
 bool vdev_any_prog(void);                               // is any virtual device in programming mode?
 int  vdev_first_unbound(void);                          // first device with a Zigbee link and no address, -1: none
 bool vdev_has_zigbee(uint16_t zaddr);                   // does a virtual device serve this Zigbee device?
@@ -67,6 +77,9 @@ bool vdev_seen(uint16_t zaddr, const uint8_t ieee[8]);  // a Zigbee device showe
 bool vdev_unbound(int i);                               // a Zigbee device behind it and no individual address yet
 bool vdev_unprogrammed(int i);                          // in use and without an individual address
 bool vdev_ieee(int i, uint8_t ieee[8]);                 // the IEEE address of its Zigbee device; false: not known
+// Does the Zigbee device of virtual device i keep its receiver on (from its announce or node descriptor, kept in its
+// record)? 1 yes, 0 no (a sleepy end device), -1 not known or no such device
+int  vdev_rx_on(int i);
 bool vdev_zigbee(int i, uint16_t *zaddr, uint8_t *ep);  // the Zigbee device behind virtual device i
 void vdev_model_event(int inst);                        // the device told its model: compare it with the template
 void vdev_gone(int i);                                  // its Zigbee device left the network
@@ -80,12 +93,16 @@ void vdev_test_refuse(uint8_t err);                     // console: the next che
 // idle). Kept in its record: a sleepy end device must not count as gone because it does not answer at once.
 void vdev_set_capability(const uint8_t ieee[8], uint8_t capability);
 void vdev_avail_note(int inst, bool on);               // from zlink.c: the device of this instance is off / back
-int  vdev_max_apdu(int n);                              // console: PID 56 of every device (15 .. 66); 0 reads it
+// PID 56 (max APDU length) of every device and the gateway, 15 .. 66; 0 only reads it. Set from the gateway's parameters
+// at every start and every restart of the gateway's device (gw.c); the console may override it until then.
+int  vdev_max_apdu(int n);
 void vdev_set_endpoint(uint16_t zaddr, uint8_t ep);     // the interview found the device's function on endpoint ep
 uint8_t vdev_endpoint_of(uint16_t zaddr);               // the endpoint the device at zaddr is used on, 0: none of ours
 void vdev_set_capability_of(uint16_t zaddr, uint8_t capability);   // as vdev_set_capability, by short address
-int  vdev_faulty(void);                                 // virtual devices whose application is in Error or not running
+int  vdev_faulty(void);                                 // devices whose application is in Error or does not run, the
+                                                        // gateway's own included
 int  vdev_store_pct(void);                              // NVS entries of the records' partition in use, percent
+bool vdev_store_failing(void);                          // no storage, or a record that does not get into the flash
 
 // Why a load state machine went to Error: PID_ERROR_CODE (28), DPT_ErrorClass_System 20.011
 // (KNX Standard v3.0.0, 03_05_01 4.2.28 p. 40; codes 03_07_02 p. 55). Only the codes this firmware gives.
@@ -103,6 +120,8 @@ enum {
 // gw.c: the gateway's own KNX device (application 0xC000 "Zigbee gateway"), its button S1 and its LED
 void gw_start(void);                                       // after pair_start()
 void gw_params(const uint8_t *p, size_t n, uint16_t ia);   // parameter segment of the gateway's download
+// LoadCompleted of the gateway's application: parameters it cannot take give KNX_ERR_CONFIG and why; 0: fine
+uint8_t gw_params_check(const uint8_t *p, size_t n, uint16_t ia, char *why, size_t wn);
 void gw_ia(uint16_t ia);                                   // the gateway got another individual address
 void gw_knx_write(int ko, const uint8_t *v, int n);        // a group write to one of its objects
 void gw_print(void);
@@ -116,6 +135,10 @@ enum {
     GW_NOTE_OFFLINE,       // a linked Zigbee device does not answer (zlink.c, avail.h)
     GW_NOTE_ONLINE,        // ... and answers again
     GW_NOTE_REMOVED,       // ETS unloaded the address of a virtual device: it is removed, its Zigbee device asked to leave
+    GW_NOTE_STORE,         // a record does not get into the flash (partition full or failing), or there is no storage
+    GW_NOTE_DUP,           // an individual address another of our devices has already: not taken
+    GW_NOTE_GROUPS,        // more different group addresses than the link acknowledges (KNX_ACK_GA_MAX)
+    GW_NOTE_LAST = GW_NOTE_GROUPS
 };
 void gw_note(int kind, uint16_t ia, uint8_t err, const char *why);
 
@@ -187,6 +210,8 @@ void      zlink_announced(int inst);                                 // it annou
 int       zlink_set(int inst, int k, uint16_t addr, uint8_t ep);   // add, or move an instance to another class/device
 void      zlink_out(const char *json);                               // every line a Berry hook emits (bvm.c m_out)
 void      zlink_attr(uint16_t addr, uint16_t cluster, uint16_t attr, uint8_t type, const void *val);
+void      zlink_attr_ep(uint16_t addr, uint8_t ep, uint16_t cluster, uint16_t attr, uint8_t type, const void *val);
+bool      zlink_params_due(int inst);   // it answers again: true once, when its class is to write its parameters again
 // a command the device sent to us (remote buttons); true: a linked instance takes it as dp_event "zcl.cmd"
 bool      zlink_cmd(uint16_t addr, uint16_t cluster, uint8_t cmd, const uint8_t *payload, int len);
 esp_err_t zlink_knx_write(int inst, int ko, const char *hex);       // as if the group object had been written
@@ -247,6 +272,7 @@ int         bvm_template_check(const uint8_t *seg, size_t n, size_t free_extra, 
 size_t      bvm_slot_heap(int k);       // heap the VM of slot k holds, 0: none loaded
 int         bvm_vm_count(void);         // VMs loaded: built-in classes and templates
 const char *bvm_slot_digest(int k);     // content digest of the template in slot k, "" for a built-in class or none
+int         bvm_slot_of(const char *digest);   // the template slot whose VM runs this content, -1: none
 void        bvm_keep(uint32_t mask);    // delete the VMs of template slots whose bit is clear
 // Is the model instance inst reported one of those the template in slot k names? 1 yes, 0 no, -1 nothing to compare
 // (a built-in class, a template without a list), -2 the device has not told its model yet. model and count are

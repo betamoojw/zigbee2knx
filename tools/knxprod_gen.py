@@ -28,12 +28,21 @@ segment ETS would write from the defaults is computed from the generated XML and
 (`kgt.extract`), and it must give back exactly the packed template.
 
 Ids follow the producer's conventions (%AID%, P-n with n = position in the parameter list, O-n with
-n = object number, one ref per parameter and object: P-n_R-n, O-n_R-n).
+n = object number, one ref per parameter and object: P-n_R-n, O-n_R-n). Catalog sections nest as the manifest's
+knx.catalog.sections lists them, outermost first; their ids follow the manufacturers' product files: the outermost
+<manufacturer>_CS-<Number>, every inner one <id of its parent>-<Number>. ETS merges sections of the same id across
+product files, so a section keeps its number and name in every file.
+
+Versions given out (producer/issued.json): an application that has been imported into an ETS keeps its ids and
+their meaning in every later version, a later version replaces all lower versions given out, and a version given out
+is never generated again with other content. issued_problems() checks a producer input against that list;
+--issued-record prints the entry of a version after its import, for that list.
 """
 from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -46,6 +55,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import kgt  # noqa: E402
 
 NS = "http://knx.org/xml/project/20"
+ISSUED = os.path.join(ROOT, "producer", "issued.json")
+ORDER_MAX = 50                    # OrderNumber is String50_t in the KNX schema
+SECTION_NUMBER = re.compile(r"[A-Za-z0-9]{1,20}")   # CatalogSection Number is String20_t; kept to what an id holds as is
 FLAGS = (("R", "ReadFlag"), ("W", "WriteFlag"), ("C", "CommunicationFlag"), ("T", "TransmitFlag"),
          ("U", "UpdateFlag"), ("I", "ReadOnInitFlag"))
 SEG_ID = "%AID%_RS-04-00000"
@@ -54,6 +66,9 @@ CARRIERS = ("text", "rawdata", "data", "inline")
 RAW_HEAD = 4        # bytes ETS keeps in front of a TypeRawData value: in the ABB i-bus product of the corpus the
                     # parameters lie MaxSize + 4 apart. Taken as the length, big endian; not seen on a device yet.
 SIGN_KEY = os.environ.get("ZIGBEE2KNX_SIGN_KEY", "")   # PEM private key (P-256) that signs the embedded templates
+SIGN_CMD = os.environ.get("ZIGBEE2KNX_SIGN_CMD", "")   # or an external signer: digest hex on stdin, r||s hex on stdout
+SIGN_FPR = os.environ.get("ZIGBEE2KNX_SIGN_FPR", "")   # its key, looked up by fingerprint in tools/kgt_trust.json
+TRUST_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kgt_trust.json")
 
 
 class GenError(Exception):
@@ -81,6 +96,146 @@ def version_clash(old_xml: str, new_xml: str) -> str | None:
     return None
 
 
+def load_issued(path: str = ISSUED) -> dict:
+    """The versions given out (producer/issued.json); none where the file is missing."""
+    if not os.path.exists(path):
+        return {"applications": [], "history": []}
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def issued_below(issued: dict, number: int, version: int) -> list[int]:
+    """The versions of an application given out below `version`: what its ReplacesVersions has to name."""
+    return sorted(e["version"] for e in issued.get("applications", []) if e["number"] == number and e["version"] < version)
+
+
+def application_meaning(xml_text: str) -> dict:
+    """What the ids of the application in a producer input stand for. Objects by number: [Name, ObjectSize,
+    DatapointType]; parameters by the n of their id P-n: [Name, offset in the segment, parameter type]; parameter
+    types by name: [kind, bits, values or range]. Also number, version, ReplacesVersions, the ids of the refs and the
+    SHA-256 of the ApplicationProgram element as the file writes it."""
+    m = APP_RE.search(xml_text)
+    if not m:
+        raise GenError("no ApplicationProgram in the file")
+    root = ET.fromstring(xml_text)
+    q = lambda tag: f"{{{NS}}}{tag}"                                       # noqa: E731
+    prog = next(root.iter(q("ApplicationProgram")))
+    aid = prog.get("Id")
+
+    def local(ident: str, prefix: str) -> str:
+        if not ident.startswith(f"{aid}_{prefix}"):
+            raise GenError(f"id {ident}: not {aid}_{prefix}…")
+        return ident[len(aid) + 1 + len(prefix):]
+
+    types = {}
+    for pt in root.iter(q("ParameterType")):
+        kind = pt[0]
+        tag = kind.tag.split("}")[1]
+        if tag == "TypeRestriction":
+            t = ["enum", int(kind.get("SizeInBit")), [[int(e.get("Value")), e.get("Text")] for e in kind.iter(q("Enumeration"))]]
+        elif tag == "TypeNumber":
+            t = ["number", int(kind.get("SizeInBit")), kind.get("Type"), int(kind.get("minInclusive")),
+                 int(kind.get("maxInclusive"))]
+        elif tag == "TypeText":
+            t = ["text", int(kind.get("SizeInBit"))]
+        elif tag == "TypeRawData":
+            t = ["raw", int(kind.get("MaxSize")) * 8]
+        else:
+            t = [tag, 0]
+        types[local(pt.get("Id"), "PT-")] = t
+    params = {}
+    for p in root.iter(q("Parameter")):
+        mem = p.find(q("Memory"))
+        params[local(p.get("Id"), "P-")] = [p.get("Name"), int(mem.get("Offset")) if mem is not None else None,
+                                            local(p.get("ParameterType"), "PT-")]
+    objects = {}
+    for o in root.iter(q("ComObject")):
+        n = local(o.get("Id"), "O-")
+        if n != str(int(o.get("Number"))):
+            raise GenError(f"object {o.get('Id')} has the number {o.get('Number')}")
+        objects[n] = [o.get("Name"), o.get("ObjectSize"), o.get("DatapointType")]
+    refs = sorted(local(r.get("Id"), "") for tag in ("ParameterRef", "ComObjectRef") for r in root.iter(q(tag)))
+    rv = [int(v) for v in prog.get("ReplacesVersions", "0").split() if int(v) != 0]
+    man = next(root.iter(q("Manufacturer"))).get("RefId")
+    return {"manufacturer": man, "number": int(m.group(1)), "version": int(m.group(2)), "replaces": rv,
+            "sha256": hashlib.sha256(m.group(0).encode("utf-8")).hexdigest(), "objects": objects, "parameters": params,
+            "parameter_types": types, "refs": refs}
+
+
+def _type_keeps(old: list, new: list | None) -> bool:
+    """A parameter type of a later version still holds every value the earlier one could hold, with the same meaning."""
+    if new is None or old[:2] != new[:2]:
+        return False
+    if old[0] == "enum":
+        return all(v in new[2] for v in old[2])
+    if old[0] == "number":
+        return old[2] == new[2] and new[3] <= old[3] and new[4] >= old[4]
+    return old == new
+
+
+def issued_problems(xml_text: str, issued: dict | None = None) -> list[str]:
+    """What keeps this producer input from going out next to the versions given out (producer/issued.json): a version
+    given out, generated again with other content; ReplacesVersions that does not name every lower version given out;
+    an object or parameter id of such a version that is gone or stands for something else. Empty: nothing."""
+    issued = load_issued() if issued is None else issued
+    mn = application_meaning(xml_text)
+    num, ver = mn["number"], mn["version"]
+    out = []
+    same = [e for e in issued.get("applications", []) if e["number"] == num and e["version"] == ver]
+    if same and same[0]["application_sha256"] != mn["sha256"]:
+        out.append(f"application 0x{num:04X} version {ver} has been given out ({same[0]['id']}); this file holds other "
+                   f"content under that number and version")
+    want = issued_below(issued, num, ver)
+    if not same and mn["replaces"] != want:
+        out.append(f"ReplacesVersions names {mn['replaces'] or 'none'}; versions of 0x{num:04X} given out below {ver}: "
+                   f"{want or 'none'}")
+    for e in issued.get("applications", []):
+        if e["number"] != num or e["version"] >= ver:
+            continue
+        for n, old in e["objects"].items():
+            new = mn["objects"].get(n)
+            if new != old:
+                out.append(f"object {n} {old} of {e['id']}: {new or 'missing'} here")
+            if f"O-{n}_R-{n}" not in mn["refs"]:
+                out.append(f"object {n} of {e['id']}: no ref O-{n}_R-{n} here")
+        for n, old in e["parameters"].items():
+            new = mn["parameters"].get(n)
+            if new != old:
+                out.append(f"parameter P-{n} {old} of {e['id']}: {new or 'missing'} here")
+            elif not _type_keeps(e["parameter_types"][old[2]], mn["parameter_types"].get(old[2])):
+                out.append(f"parameter type {old[2]} of {e['id']} {e['parameter_types'][old[2]]}: "
+                           f"{mn['parameter_types'].get(old[2])} here")
+            if f"P-{n}_R-{n}" not in mn["refs"]:
+                out.append(f"parameter P-{n} of {e['id']}: no ref P-{n}_R-{n} here")
+    return out
+
+
+def embedded_template(xml_text: str) -> tuple[dict, str, str | None] | None:
+    """(payload, digest, signing key fingerprint) of the template in the parameter segment of a producer input, the
+    signature not checked; None for a product without one."""
+    seg = image(xml_text)
+    if len(seg) < kgt.TRAILER_LEN or seg[-kgt.TRAILER_LEN:-kgt.TRAILER_LEN + 4] != kgt.TRAILER_MAGIC:
+        return None
+    t = seg[-kgt.TRAILER_LEN:].decode("ascii", "replace")
+    if not re.fullmatch(r"KGTE[0-9A-F]{12}", t):
+        raise GenError(f"trailer {t!r} malformed")
+    off, length = int(t[4:8], 16), int(t[8:12], 16)
+    return kgt.peek(base64.b64decode(seg[off:off + length], validate=True))
+
+
+def issued_record(xml_text: str, app_id: str) -> dict:
+    """The entry of producer/issued.json for the application of this producer input, imported into ETS as app_id (the id
+    with the fingerprint the ETS signing gave it)."""
+    mn = application_meaning(xml_text)
+    if not re.fullmatch(rf"{mn['manufacturer']}_A-{mn['number']:04X}-{mn['version']:02X}-[0-9A-F]{{4}}", app_id):
+        raise GenError(f"{app_id}: not an id of application 0x{mn['number']:04X} version {mn['version']}")
+    emb = embedded_template(xml_text)
+    tpl = None if emb is None else {"id": emb[0]["id"], "version": emb[0]["version"], "digest": emb[1]}
+    return {"number": mn["number"], "version": mn["version"], "id": app_id, "template": tpl,
+            "application_sha256": mn["sha256"], "objects": mn["objects"], "parameters": mn["parameters"],
+            "parameter_types": mn["parameter_types"]}
+
+
 def dpst(dpt: str) -> str:
     """"1.001" -> "DPST-1-1"."""
     main, _, sub = dpt.partition(".")
@@ -93,8 +248,28 @@ def sub(parent, tag, **attrs):
     return ET.SubElement(parent, tag, {k: str(v) for k, v in attrs.items()})
 
 
+def catalog_sections(cat: dict, mfr: str) -> list[tuple[str, str, str]]:
+    """(id, name, number) of the catalog sections, outermost first: knx.catalog.sections, or the one section that
+    knx.catalog.section and section_number name in manifests from before nested sections."""
+    secs = cat.get("sections") or [{"number": cat["section_number"], "name": cat["section"]}]
+    out, sid = [], None
+    for s in secs:
+        num = str(s["number"])
+        if not SECTION_NUMBER.fullmatch(num):
+            raise GenError(f"catalog section number {num!r}: 1 to 20 letters and digits")
+        if not s.get("name"):
+            raise GenError(f"catalog section {num}: no name")
+        sid = f"{mfr}_CS-{num}" if sid is None else f"{sid}-{num}"
+        out.append((sid, s["name"], num))
+    return out
+
+
 def check_manifest(m: dict):
     knx = m["knx"]
+    order = knx["hardware"]["order_number"]
+    if not order or len(order) > ORDER_MAX or order != order.strip() or "%" in order:
+        raise GenError(f"order number {order!r}: 1 to {ORDER_MAX} characters, no blanks at the ends, no '%'")
+    catalog_sections(knx["catalog"], knx["manufacturer"])
     numbers = [o["number"] for o in knx["objects"]]
     if len(set(numbers)) != len(numbers):
         raise GenError("object numbers repeat")
@@ -179,8 +354,9 @@ def generate(m: dict, behaviour_src: str | None = None, access: str | None = Non
     root = ET.Element("KNX", {"xmlns": NS, "CreatedBy": "KNX MT", "ToolVersion": "5.1.255.16695"})
     man = sub(sub(root, "ManufacturerData"), "Manufacturer", RefId=mfr)
 
-    section = sub(sub(man, "Catalog"), "CatalogSection", Id=f"{mfr}_CS-{cat['section_number']}", Name=cat["section"],
-                  Number=cat["section_number"], DefaultLanguage=lang)
+    section = sub(man, "Catalog")
+    for sid, name, number in catalog_sections(cat, mfr):
+        section = sub(section, "CatalogSection", Id=sid, Name=name, Number=number, DefaultLanguage=lang)
     sub(section, "CatalogItem", Id="%CatalogItemId%", Name=app_name or hw["name"], Number=cat["item_number"],
         ProductRefId="%ProductId%", Hardware2ProgramRefId="%Hardware2ProgramId%", DefaultLanguage=lang)
 
@@ -302,6 +478,8 @@ def generate(m: dict, behaviour_src: str | None = None, access: str | None = Non
     hwe = sub(sub(man, "Hardware"), "Hardware", Id="%HardwareId%", Name=app_name or hw["name"],
               SerialNumber=hw["serial_number"], VersionNumber=hw["version"], BusCurrent=hw["bus_current_ma"],
               HasIndividualAddress="true", HasApplicationProgram="true")
+    if hw.get("nonreg_version", 0):              # data of the hardware that the registration does not cover changed
+        hwe.set("NonRegRelevantDataVersion", str(int(hw["nonreg_version"])))
     prod = sub(sub(hwe, "Products"), "Product", Id="%ProductId%", Text=app_name or hw["name"],
                OrderNumber=hw["order_number"], IsRailMounted="false", DefaultLanguage=lang)
     sub(prod, "RegistrationInfo", RegistrationStatus="Registered")
@@ -454,9 +632,34 @@ def build(template_dir: str, manifest_path: str | None = None, signer=None,
     return text, m, emb, d
 
 
+def make_signer(args):
+    """The signer the options name: a PEM key (--sign-key), or an external command (--sign-cmd) together with its
+    public key (--sign-pub, or --sign-fpr looked up in tools/kgt_trust.json)."""
+    if args.sign_cmd:
+        if args.sign_key:
+            raise GenError("a signing key and a signer command are both given (options or environment); choose one")
+        if args.sign_pub:
+            point = bytes.fromhex(args.sign_pub)
+        elif args.sign_fpr:
+            with open(TRUST_FILE, encoding="utf-8") as f:
+                keys = {k["fpr"]: bytes.fromhex(k["p256"]) for k in json.load(f)["keys"]}
+            if args.sign_fpr not in keys:
+                raise GenError(f"key {args.sign_fpr} is not in {TRUST_FILE}")
+            point = keys[args.sign_fpr]
+        else:
+            raise GenError("--sign-cmd needs the signer's public key: --sign-pub or --sign-fpr")
+        return kgt.load_command_signer(args.sign_cmd, point)
+    if not args.sign_key:
+        raise GenError("no signing key: --sign-key PEM or --sign-cmd CMD (or --unsigned for tests)")
+    return kgt.load_signer(args.sign_key)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("template", help="template directory with manifest.json")
+    ap.add_argument("template", nargs="?", help="template directory with manifest.json")
+    ap.add_argument("--issued-record", nargs=2, metavar=("PRODUCER_XML", "APP_ID"),
+                    help="print the producer/issued.json entry of the application in PRODUCER_XML, imported into ETS "
+                         "as APP_ID (e.g. M-00FA_A-C002-04-1A2B), and exit")
     ap.add_argument("--manifest", help="another manifest file (e.g. a frozen version) with the template's behaviour")
     ap.add_argument("-o", "--out", help="write here (atomic) instead of stdout")
     ap.add_argument("--check", metavar="REF.xml", help="compare with a reference producer input")
@@ -468,15 +671,31 @@ def main():
     ap.add_argument("--app-name", help="application, hardware and catalog name (test variants)")
     ap.add_argument("--sign-key", default=SIGN_KEY,
                     help="PEM private key (P-256) that signs the embedded template (default: $ZIGBEE2KNX_SIGN_KEY)")
+    ap.add_argument("--sign-cmd", default=SIGN_CMD,
+                    help="external signer instead of --sign-key: gets the SHA-256 digest as hex on stdin, prints r||s "
+                         "as hex (default: $ZIGBEE2KNX_SIGN_CMD)")
+    ap.add_argument("--sign-pub", help="with --sign-cmd: the signer's public point, 65 bytes uncompressed, as hex")
+    ap.add_argument("--sign-fpr", default=SIGN_FPR,
+                    help="with --sign-cmd: the signer's key by fingerprint from tools/kgt_trust.json "
+                         "(default: $ZIGBEE2KNX_SIGN_FPR)")
     ap.add_argument("--unsigned", action="store_true", help="embed without signature (tests only; the gateway refuses it)")
     ap.add_argument("--overwrite-version", action="store_true",
                     help="with -o: replace an application of the same number and version that has other content")
     args = ap.parse_args()
+    if args.issued_record:
+        try:
+            rec = issued_record(open(args.issued_record[0], encoding="utf-8").read(), args.issued_record[1])
+        except (GenError, OSError, ET.ParseError, kgt.KgtError) as e:
+            sys.exit(f"knxprod_gen: {args.issued_record[0]}: {e}")
+        print(json.dumps(rec, indent=2, ensure_ascii=False))
+        return
+    if not args.template:
+        ap.error("TEMPLATE_DIR is needed")
     try:
-        signer = None if args.unsigned else kgt.load_signer(args.sign_key)
+        signer = None if args.unsigned else make_signer(args)
         text, m, emb, d = build(args.template, args.manifest, signer=signer, access=args.embed_access,
                                 carrier=args.embed_carrier, app_number=args.app_number, app_name=args.app_name)
-    except (GenError, KeyError, OSError, kgt.KgtError) as e:
+    except (GenError, KeyError, OSError, ValueError, kgt.KgtError) as e:
         sys.exit(f"knxprod_gen: {args.template}: {e}")
     if emb:
         lay = emb["layout"]
