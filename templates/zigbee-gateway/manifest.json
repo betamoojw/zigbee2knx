@@ -1,0 +1,245 @@
+{
+  "schema": "knxgw-template/0",
+  "id": "zigbee.gateway",
+  "version": 2,
+  "title": "Zigbee gateway: the TUL32 itself as a KNX device",
+  "radio": "none",
+  "match": {},
+  "behaviour": {
+    "language": "c",
+    "file": "firmware gw.c (no template: the application runs in the firmware)"
+  },
+  "datapoints": {
+    "_doc": "none: the gateway has no Zigbee device behind it"
+  },
+  "sources": [
+    "firmware/main/gw.c (parameters and objects)",
+    "firmware/main/pair.c (binding from ETS, pairing window)"
+  ],
+  "open": [
+    "Application number 0xC000 under M-00FA (KNX Association), as open-source KNX projects use it; chosen by this project, not registered.",
+    "Default range 1..48 is a test setting; the default for a product is not decided yet.",
+    "Zigbee channel is not a parameter yet (fixed in the firmware).",
+    "Version 2: objects 5-12. ETS 6.4.1 does not show PID_ERROR_CODE (28), so the reason of a refused download is only visible here."
+  ],
+  "knx": {
+    "manufacturer": "M-00FA",
+    "language": "en",
+    "application": {
+      "name": "Zigbee gateway",
+      "number": 49152,
+      "version": 2,
+      "replaces": [
+        1
+      ],
+      "mask": "MV-07B0",
+      "order_info": "ZB-GATEWAY"
+    },
+    "hardware": {
+      "name": "Zigbee gateway (TUL32)",
+      "serial_number": "49152",
+      "version": 1,
+      "bus_current_ma": 10,
+      "order_number": "ZB-GATEWAY"
+    },
+    "catalog": {
+      "section": "Devices",
+      "section_number": "1",
+      "item_number": "1"
+    },
+    "objects": [
+      {
+        "number": 1,
+        "name": "Pairing",
+        "text": "Zigbee pairing",
+        "function": "Start/Stop",
+        "size": "1 Bit",
+        "flags": "CW",
+        "dpt": "1.010",
+        "zigbee": "1 opens the network for the pairing window; the first device that joins waits for ETS to give it an address. 0 closes it."
+      },
+      {
+        "number": 2,
+        "name": "PairingActive",
+        "text": "Zigbee pairing active",
+        "function": "Status",
+        "size": "1 Bit",
+        "flags": "CRT",
+        "dpt": "1.011",
+        "zigbee": "1 while the network is open because this gateway opened it (window or binding from ETS)"
+      },
+      {
+        "number": 3,
+        "name": "Devices",
+        "text": "Zigbee devices with an address",
+        "function": "Count",
+        "size": "1 Byte",
+        "flags": "CRT",
+        "dpt": "5.010",
+        "zigbee": "virtual devices with an individual address"
+      },
+      {
+        "number": 4,
+        "name": "Waiting",
+        "text": "Zigbee devices waiting for an address",
+        "function": "Count",
+        "size": "1 Byte",
+        "flags": "CRT",
+        "dpt": "5.010",
+        "zigbee": "virtual devices that joined and have no individual address yet"
+      },
+      {
+        "number": 5,
+        "name": "FreePlaces",
+        "text": "Free places for Zigbee devices",
+        "function": "Count",
+        "size": "1 Byte",
+        "flags": "CRT",
+        "dpt": "5.010",
+        "zigbee": "virtual devices still free (32 in all); 0 also sets the fault object"
+      },
+      {
+        "number": 6,
+        "name": "FreeHeap",
+        "text": "Free memory (heap)",
+        "function": "Diagnostics",
+        "size": "4 Bytes",
+        "flags": "CR",
+        "dpt": "12.001",
+        "zigbee": "free heap in octets; read only, never sent by itself"
+      },
+      {
+        "number": 7,
+        "name": "FreeHeapMin",
+        "text": "Free memory, minimum since the start",
+        "function": "Diagnostics",
+        "size": "4 Bytes",
+        "flags": "CR",
+        "dpt": "12.001",
+        "zigbee": "lowest free heap since the start, octets"
+      },
+      {
+        "number": 8,
+        "name": "LargestBlock",
+        "text": "Largest free memory block",
+        "function": "Diagnostics",
+        "size": "4 Bytes",
+        "flags": "CR",
+        "dpt": "12.001",
+        "zigbee": "largest free heap block, octets; a template needs one block of about twice its source"
+      },
+      {
+        "number": 9,
+        "name": "ClassVMs",
+        "text": "Device classes loaded",
+        "function": "Count",
+        "size": "1 Byte",
+        "flags": "CRT",
+        "dpt": "5.010",
+        "zigbee": "Berry VMs: built-in classes and templates; devices of one class share one"
+      },
+      {
+        "number": 10,
+        "name": "StorageUsed",
+        "text": "Device storage used",
+        "function": "Diagnostics",
+        "size": "1 Byte",
+        "flags": "CRT",
+        "dpt": "5.001",
+        "zigbee": "NVS entries of the partition devsrv in use"
+      },
+      {
+        "number": 11,
+        "name": "LastMessage",
+        "text": "Last message",
+        "function": "Diagnostics",
+        "size": "14 Bytes",
+        "flags": "CRT",
+        "dpt": "16.001",
+        "zigbee": "'<address> <code>': RAM, CRC, CONF, SW, LOAD (a download refused or not running), MODEL (Zigbee model not in the product's list), FULL (a device or an ETS question refused: no place free), OFF (the Zigbee device does not answer), ON (it answers again)"
+      },
+      {
+        "number": 12,
+        "name": "Fault",
+        "text": "Fault",
+        "function": "Alarm",
+        "size": "1 Bit",
+        "flags": "CRT",
+        "dpt": "1.005",
+        "zigbee": "1 while an application is in load state Error or does not run, while a linked Zigbee device does not answer, or after a refusal for want of a place until a place is free again; a gateway that is only full is no fault"
+      }
+    ],
+    "parameter_types": {
+      "YesNo": {
+        "bits": 8,
+        "enum": [
+          [
+            0,
+            "no"
+          ],
+          [
+            1,
+            "yes"
+          ]
+        ]
+      },
+      "DeviceNumber": {
+        "bits": 8,
+        "number": {
+          "type": "unsignedInt",
+          "min": 1,
+          "max": 254
+        }
+      },
+      "Seconds": {
+        "bits": 8,
+        "number": {
+          "type": "unsignedInt",
+          "min": 10,
+          "max": 254
+        }
+      }
+    },
+    "parameters": {
+      "segment_size": 4,
+      "block": {
+        "name": "General",
+        "text": "Zigbee gateway"
+      },
+      "list": [
+        {
+          "offset": 0,
+          "name": "EtsBinding",
+          "text": "Bind a new Zigbee device when ETS asks for its programming button",
+          "type": "YesNo",
+          "default": 1,
+          "zigbee": "pair.c: series from ETS opens the network"
+        },
+        {
+          "offset": 1,
+          "name": "FirstDevice",
+          "text": "Addresses for Zigbee devices in this line: first device number",
+          "type": "DeviceNumber",
+          "default": 1,
+          "zigbee": "pair range, low end"
+        },
+        {
+          "offset": 2,
+          "name": "LastDevice",
+          "text": "Addresses for Zigbee devices in this line: last device number",
+          "type": "DeviceNumber",
+          "default": 48,
+          "zigbee": "pair range, high end"
+        },
+        {
+          "offset": 3,
+          "name": "PairingWindow",
+          "text": "Pairing window for the object and the button (s)",
+          "type": "Seconds",
+          "default": 180,
+          "zigbee": "pair window"
+        }
+      ]
+    }
+  }
+}

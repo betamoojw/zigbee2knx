@@ -1,0 +1,16 @@
+# TULX32 overlay: the frozen partition table of the TULX32 as shipped (partitions_tulx.csv) and the console on UART0.
+# Build out of tree, next to the TUL32 build:
+#   idf.py -B build-tulx -DSDKCONFIG=build-tulx/sdkconfig -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.tulx" build
+# NEVER `idf.py flash` with this table: it has ota_0 AND factory, and IDF picks factory, which holds the recovery
+# system. The application belongs at 0x10000 (ota_0); on a shipped TULX the recovery installs it.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_tulx.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions_tulx.csv"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_Z2K_BOARD_TULX32=y
+# no USB on this product: the console must not sit on USB-Serial-JTAG (a TULX built that way is mute)
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=n
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_NUM=0
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

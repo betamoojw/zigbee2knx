@@ -1,0 +1,241 @@
+{
+  "schema": "knxgw-template/0",
+  "id": "zigbee.class.remote",
+  "version": 2,
+  "title": "Zigbee remote as a KNX push button",
+  "radio": "zigbee",
+  "match": {
+    "class": "remote",
+    "zigbeeModel": [
+      "KNYCKLAN Open/Close remote",
+      "RODRET Dimmer",
+      "RODRET wireless dimmer",
+      "SYMFONISK Sound Controller",
+      "TRADFRI SHORTCUT Button",
+      "TRADFRI on/off switch",
+      "TRADFRI wireless dimmer"
+    ]
+  },
+  "behaviour": {
+    "language": "berry",
+    "file": "zigbee-remote.be"
+  },
+  "datapoints": {
+    "_doc": "<endpoint>.<property>; endpoint 0 = device identity and availability (gateway: true/false). zcl.cmd: 'cluster,command,payload' in hex, a command the remote sent to the gateway (gateway zlink.c). battery: percent.",
+    "write": [],
+    "events": [
+      "0.zigbeeModel",
+      "0.availability",
+      "1.zcl.cmd",
+      "1.battery"
+    ],
+    "master": []
+  },
+  "products": [
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI on/off switch",
+      "zigbeeModel": [
+        "TRADFRI on/off switch"
+      ],
+      "entry": [
+        1
+      ],
+      "model": "E1743"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "SYMFONISK sound remote, gen 1",
+      "zigbeeModel": [
+        "SYMFONISK Sound Controller"
+      ],
+      "entry": [
+        1
+      ],
+      "model": "E1744"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI shortcut button",
+      "zigbeeModel": [
+        "TRADFRI SHORTCUT Button"
+      ],
+      "entry": [
+        1
+      ],
+      "model": "E1812"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "KNYCKLAN open/close water valve remote",
+      "zigbeeModel": [
+        "KNYCKLAN Open/Close remote"
+      ],
+      "entry": [
+        1
+      ],
+      "model": "E1841"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "RODRET wireless dimmer/power switch",
+      "zigbeeModel": [
+        "RODRET Dimmer",
+        "RODRET wireless dimmer"
+      ],
+      "entry": [
+        1
+      ],
+      "model": "E2201"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI wireless dimmer",
+      "zigbeeModel": [
+        "TRADFRI wireless dimmer"
+      ],
+      "entry": [
+        1
+      ],
+      "model": "ICTC-G-1"
+    }
+  ],
+  "generated": {
+    "by": "distill/z2m_to_knx.py v3",
+    "from": "zigbee-herdsman-converters 26.57.0",
+    "models": 6
+  },
+  "sources": [
+    "zigbee-herdsman-converters 26.57.0 (MIT, (c) Koen Kanters), distilled by distill/dump_z2m.cjs (facts only)",
+    "ZCL: On/Off cluster commands 0x00-0x02, 0x40-0x42; Level Control commands 0x00-0x07",
+    "KNX DPT 3.007 (dimming control), 5.001, 1.001"
+  ],
+  "open": [
+    "The gateway binds the remote's On/Off and Level clusters to itself when it links the device; a sleeping remote may miss that and needs a button press while the gateway asks",
+    "Long press and release of the IKEA remotes map to move and stop as Zigbee2MQTT reads them; not seen on air yet",
+    "Remotes with arrows, scenes or double clicks are not in this class"
+  ],
+  "knx": {
+    "manufacturer": "M-00FA",
+    "language": "en",
+    "application": {
+      "name": "Zigbee remote",
+      "number": 49156,
+      "version": 2,
+      "replaces": [
+        1
+      ],
+      "mask": "MV-07B0",
+      "order_info": "ZB-REMOTE"
+    },
+    "hardware": {
+      "name": "Zigbee remote",
+      "serial_number": "49156",
+      "version": 1,
+      "bus_current_ma": 0,
+      "order_number": "ZB-REMOTE"
+    },
+    "catalog": {
+      "section": "Devices",
+      "section_number": "1",
+      "item_number": "1"
+    },
+    "objects": [
+      {
+        "number": 1,
+        "name": "Switch",
+        "text": "Switch",
+        "function": "On/Off",
+        "size": "1 Bit",
+        "flags": "CT",
+        "dpt": "1.001",
+        "zigbee": "On/Off commands of the remote: on, off, toggle (opposite of KO 5)"
+      },
+      {
+        "number": 2,
+        "name": "Dimming",
+        "text": "Relative dimming",
+        "function": "Brighter/Darker",
+        "size": "4 Bit",
+        "flags": "CT",
+        "dpt": "3.007",
+        "zigbee": "Level move -> start brighter/darker (100 %), stop -> stop, step -> 12.5 %"
+      },
+      {
+        "number": 3,
+        "name": "Value",
+        "text": "Brightness value",
+        "function": "Value",
+        "size": "1 Byte",
+        "flags": "CT",
+        "dpt": "5.001",
+        "zigbee": "Level move to level"
+      },
+      {
+        "number": 4,
+        "name": "Battery",
+        "text": "Battery",
+        "function": "Percent",
+        "size": "1 Byte",
+        "flags": "CRT",
+        "dpt": "5.001",
+        "zigbee": "battery (BatteryPercentageRemaining / 2)"
+      },
+      {
+        "number": 5,
+        "name": "SwitchStatus",
+        "text": "Switch status (for toggle)",
+        "function": "On/Off",
+        "size": "1 Bit",
+        "flags": "CWU",
+        "dpt": "1.001",
+        "zigbee": "state of the switched load, so toggle sends the opposite"
+      },
+      {
+        "number": 6,
+        "name": "Available",
+        "text": "Zigbee device reachable",
+        "function": "Status",
+        "size": "1 Bit",
+        "flags": "CRT",
+        "dpt": "1.002",
+        "zigbee": "0.availability <- gateway (firmware avail.h): true while the device answers, false when not; the first true after linking only fills the shadow"
+      }
+    ],
+    "parameter_types": {
+      "YesNo": {
+        "bits": 8,
+        "enum": [
+          [
+            0,
+            "no"
+          ],
+          [
+            1,
+            "yes"
+          ]
+        ]
+      }
+    },
+    "parameters": {
+      "segment_size": 1,
+      "block": {
+        "name": "General",
+        "text": "Zigbee remote"
+      },
+      "list": [
+        {
+          "offset": 0,
+          "name": "InvertSwitch",
+          "text": "Invert the switch telegrams (on button sends 0)",
+          "type": "YesNo",
+          "default": 0,
+          "zigbee": "gateway: KO 1 sends the opposite"
+        }
+      ]
+    },
+    "embed": {
+      "carrier": "data"
+    }
+  }
+}

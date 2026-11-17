@@ -1,0 +1,10 @@
+menu "zigbee2knx"
+
+config Z2K_BOARD_TULX32
+    bool "TULX32: button S1 on GPIO14, console on UART0, the frozen partition table of the TULX32 as shipped"
+    default n
+    help
+        Builds for the TULX32 (main/board.h): records and templates in actor_db, Zigbee in the shared nvs, which
+        this firmware then never erases. Set by sdkconfig.tulx.
+
+endmenu

@@ -1,0 +1,708 @@
+{
+  "schema": "knxgw-template/0",
+  "id": "zigbee.class.dimmable",
+  "version": 2,
+  "title": "Zigbee dimmable light as a KNX dimming actuator",
+  "radio": "zigbee",
+  "match": {
+    "class": "dimmable",
+    "zigbeeModel": [
+      "\u001aTRADFRI bulb GU10 WW 345lm",
+      "\u001aTRADFRI bulb GU10 WW 345lm8",
+      "Floor lamp WW",
+      "Pendant lamp WW",
+      "SILVERGLANS IP44 LED driver",
+      "STOFTMOLN ceiling/wall lamp WW10",
+      "STOFTMOLN ceiling/wall lamp WW15",
+      "STOFTMOLN ceiling/wall lamp WW24",
+      "STOFTMOLN ceiling/wall lamp WW37",
+      "TRADFRI Driver 10W",
+      "TRADFRI Driver 30W",
+      "TRADFRI bulb E12 W op/ch 400lm",
+      "TRADFRI bulb E14 W op/ch 400lm",
+      "TRADFRI bulb E17 W op/ch 400lm",
+      "TRADFRI bulb E26 W opal 1000lm",
+      "TRADFRI bulb E26 WW 806lm",
+      "TRADFRI bulb E26 WW G95 CL 440lm",
+      "TRADFRI bulb E26 WW G95 CL 450lm",
+      "TRADFRI bulb E26 WW G95 CL 470lm",
+      "TRADFRI bulb E26 WW clear 250lm",
+      "TRADFRI bulb E26 WW globe 800lm",
+      "TRADFRI bulb E26 WW globe 806lm",
+      "TRADFRI bulb E26 WW globe 810lm",
+      "TRADFRI bulb E26 opal 1000lm",
+      "TRADFRI bulb E27 W opal 1000lm",
+      "TRADFRI bulb E27 WW 806lm",
+      "TRADFRI bulb E27 WW G95 CL 470lm",
+      "TRADFRI bulb E27 WW clear 250lm",
+      "TRADFRI bulb E27 WW globe 806lm",
+      "TRADFRI bulb E27 opal 1000lm",
+      "TRADFRI bulb GU10 W 400lm",
+      "TRADFRI bulb GU10 WW 345lm",
+      "TRADFRI bulb GU10 WW 380lm",
+      "TRADFRI bulb GU10 WW 400lm",
+      "TRADFRI transformer 10W",
+      "TRADFRI transformer 30W",
+      "TRADFRIbulbE12WWcandleclear250lm",
+      "TRADFRIbulbE12WWclear250lm",
+      "TRADFRIbulbE14WWclear250lm",
+      "TRADFRIbulbE17WWclear250lm",
+      "TRADFRIbulbE26WWclear250lm",
+      "TRADFRIbulbE26WWglobeclear250lm",
+      "TRADFRIbulbE27WWclear250lm",
+      "\\u001TRADFRI bulb GU10 WW 345lm"
+    ]
+  },
+  "behaviour": {
+    "language": "berry",
+    "file": "zigbee-dimmable-light.be"
+  },
+  "datapoints": {
+    "_doc": "<endpoint>.<Zigbee2MQTT property path>; endpoint 0 = device identity and availability (gateway: true/false). 'transition' applies to the next state/brightness command only. colorTempPhysicalMin/Max: ZCL 0x400B/0x400C as the lamp reports them (the radio adapter reads them).",
+    "write": [
+      "1.state",
+      "1.brightness",
+      "1.brightness_move",
+      "1.brightness_move_onoff",
+      "1.transition",
+      "1.power_on_behavior",
+      "1.level_config.current_level_startup",
+      "1.identify"
+    ],
+    "events": [
+      "0.zigbeeModel",
+      "0.availability",
+      "1.state",
+      "1.brightness"
+    ],
+    "master": []
+  },
+  "products": [
+    {
+      "vendor": "IKEA",
+      "description": "PILSKOTT floor lamp, warm white",
+      "zigbeeModel": [
+        "Floor lamp WW"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "G2015"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI LED driver, 10 w",
+      "zigbeeModel": [
+        "TRADFRI transformer 10W",
+        "TRADFRI Driver 10W"
+      ],
+      "entry": [
+        2,
+        0,
+        0,
+        3
+      ],
+      "model": "ICPSHC24-10EU-IL-1/ICPSHC24-10EU-IL-2"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "SILVERGLANS LED driver, 30 w, IP44",
+      "zigbeeModel": [
+        "SILVERGLANS IP44 LED driver"
+      ],
+      "entry": [
+        2,
+        0,
+        0,
+        3
+      ],
+      "model": "ICPSHC24-30-IL44-1"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI LED driver, 30 w",
+      "zigbeeModel": [
+        "TRADFRI transformer 30W",
+        "TRADFRI Driver 30W"
+      ],
+      "entry": [
+        2,
+        0,
+        0,
+        3
+      ],
+      "model": "ICPSHC24-30EU-IL-1/ICPSHC24-10EU-IL-2"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI bulb E26, white, globe, opal, 1000 lm",
+      "zigbeeModel": [
+        "TRADFRI bulb E26 opal 1000lm",
+        "TRADFRI bulb E26 W opal 1000lm"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "LED1622G12"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI bulb E27, white, globe, opal, 1000 lm",
+      "zigbeeModel": [
+        "TRADFRI bulb E27 opal 1000lm",
+        "TRADFRI bulb E27 W opal 1000lm"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "LED1623G12"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI bulb E12/E14/E17, white, candle, opal, 400 lm",
+      "zigbeeModel": [
+        "TRADFRI bulb E14 W op/ch 400lm",
+        "TRADFRI bulb E12 W op/ch 400lm",
+        "TRADFRI bulb E17 W op/ch 400lm"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "LED1649C5"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI bulb GU10, white, 400 lm",
+      "zigbeeModel": [
+        "TRADFRI bulb GU10 W 400lm"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "LED1650R5"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI bulb E26/E27, warm white, globe, opal, 806 lm",
+      "zigbeeModel": [
+        "TRADFRI bulb E27 WW 806lm",
+        "TRADFRI bulb E26 WW 806lm"
+      ],
+      "entry": [
+        2,
+        0,
+        0,
+        3
+      ],
+      "model": "LED1836G9"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI bulb GU10, warm white, 400 lm",
+      "zigbeeModel": [
+        "TRADFRI bulb GU10 WW 400lm"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "LED1837R5"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI bulb E26/E27, warm white, globe, clear, 250 lm",
+      "zigbeeModel": [
+        "TRADFRI bulb E27 WW clear 250lm",
+        "TRADFRI bulb E26 WW clear 250lm"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "LED1842G3"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI bulb E26/E27, warm white, globe, clear, 250 lm",
+      "zigbeeModel": [
+        "TRADFRIbulbE27WWclear250lm",
+        "TRADFRIbulbE26WWclear250lm"
+      ],
+      "entry": [
+        2,
+        0,
+        0,
+        3
+      ],
+      "model": "LED1934G3"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI bulb E12/E14/E17, warm white, candle, clear, 250 lm",
+      "zigbeeModel": [
+        "TRADFRIbulbE14WWclear250lm",
+        "TRADFRIbulbE12WWclear250lm",
+        "TRADFRIbulbE17WWclear250lm"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "LED1935C3"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI bulb E26, warm white, globe, clear, 250 lm",
+      "zigbeeModel": [
+        "TRADFRIbulbE26WWglobeclear250lm"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "LED2008G3"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI bulb E12, warm white, candle, clear, 250 lm",
+      "zigbeeModel": [
+        "TRADFRIbulbE12WWcandleclear250lm"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "LED2009C3"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI bulb E26/E27, warm white, globe, clear, 440/450/470 lm",
+      "zigbeeModel": [
+        "TRADFRI bulb E27 WW G95 CL 470lm",
+        "TRADFRI bulb E26 WW G95 CL 450lm",
+        "TRADFRI bulb E26 WW G95 CL 440lm",
+        "TRADFRI bulb E26 WW G95 CL 470lm"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "LED2102G3"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI bulb E26/E27, warm white, globe, 806/810 lumen",
+      "zigbeeModel": [
+        "TRADFRI bulb E26 WW globe 800lm",
+        "TRADFRI bulb E26 WW globe 806lm",
+        "TRADFRI bulb E26 WW globe 810lm",
+        "TRADFRI bulb E27 WW globe 806lm"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "LED2103G5"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI bulb GU10, warm white, 345/380 lm",
+      "zigbeeModel": [
+        "\u001aTRADFRI bulb GU10 WW 345lm",
+        "TRADFRI bulb GU10 WW 345lm",
+        "\\u001TRADFRI bulb GU10 WW 345lm",
+        "\u001aTRADFRI bulb GU10 WW 345lm8",
+        "TRADFRI bulb GU10 WW 380lm"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "LED2104R3"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "PILSKOTT pendant lamp, warm white",
+      "zigbeeModel": [
+        "Pendant lamp WW"
+      ],
+      "entry": [
+        2,
+        0,
+        0,
+        3
+      ],
+      "model": "T2030"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "STOFTMOLN ceiling/wall lamp, warm white, 24 cm",
+      "zigbeeModel": [
+        "STOFTMOLN ceiling/wall lamp WW24"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "T2035"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "STOFTMOLN ceiling/wall lamp, warm white, 37 cm",
+      "zigbeeModel": [
+        "STOFTMOLN ceiling/wall lamp WW37"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "T2037"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "STOFTMOLN ceiling/wall lamp, warm white, 10 cm",
+      "zigbeeModel": [
+        "STOFTMOLN ceiling/wall lamp WW10"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "T2105"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "STOFTMOLN ceiling/wall lamp, warm white, 15 cm",
+      "zigbeeModel": [
+        "STOFTMOLN ceiling/wall lamp WW15"
+      ],
+      "entry": [
+        1,
+        0,
+        0,
+        3
+      ],
+      "model": "T2106"
+    }
+  ],
+  "generated": {
+    "by": "distill/z2m_to_knx.py v3",
+    "from": "zigbee-herdsman-converters 26.57.0",
+    "models": 23
+  },
+  "sources": [
+    "zigbee-herdsman-converters 26.57.0 (MIT, (c) Koen Kanters), distilled by distill/dump_z2m.cjs (facts only)",
+    "KNX Standard v3.0.0, 07_20_02 Lighting Actuators: FB Dimming Actuator Basic p. 37, 55",
+    "zigbee-herdsman cluster lightingColorCtrl: colorTempPhysicalMin 0x400B, colorTempPhysicalMax 0x400C"
+  ],
+  "open": [
+    "One product per class in the producer input: OpenKNXproducer expands a single product (ProcessInclude.cs)",
+    "MIN_SV/MAX_SV and MINCT/MAXCT are not enforced during relative dimming",
+    "Parameters live in host.state; after a VM restart the defaults apply until the next params call",
+    "The radio adapter must deliver 0.zigbeeModel (and colorTempPhysicalMin/Max) as datapoints"
+  ],
+  "knx": {
+    "manufacturer": "M-00FA",
+    "language": "en",
+    "application": {
+      "name": "Zigbee dimmable light",
+      "number": 49153,
+      "version": 3,
+      "replaces": [
+        2
+      ],
+      "mask": "MV-07B0",
+      "order_info": "ZB-LIGHT-D"
+    },
+    "hardware": {
+      "name": "Zigbee dimmable light",
+      "serial_number": "49153",
+      "version": 1,
+      "bus_current_ma": 0,
+      "order_number": "ZB-LIGHT-DIM"
+    },
+    "catalog": {
+      "section": "Devices",
+      "section_number": "1",
+      "item_number": "1"
+    },
+    "objects": [
+      {
+        "number": 1,
+        "name": "Switch",
+        "text": "Switch",
+        "function": "On/Off",
+        "size": "1 Bit",
+        "flags": "CW",
+        "dpt": "1.001",
+        "zigbee": "FB DAB Switch On Off -> state / brightness"
+      },
+      {
+        "number": 2,
+        "name": "Dimming",
+        "text": "Relative dimming",
+        "function": "Brighter/Darker",
+        "size": "4 Bit",
+        "flags": "CW",
+        "dpt": "3.007",
+        "zigbee": "FB DAB Relative Setvalue Control -> brightness_move(_onoff)"
+      },
+      {
+        "number": 3,
+        "name": "Value",
+        "text": "Brightness value",
+        "function": "Value",
+        "size": "1 Byte",
+        "flags": "CW",
+        "dpt": "5.001",
+        "zigbee": "FB DAB Absolute Setvalue Control -> brightness, 0 = off"
+      },
+      {
+        "number": 4,
+        "name": "SwitchStatus",
+        "text": "Switch status",
+        "function": "On/Off",
+        "size": "1 Bit",
+        "flags": "CRT",
+        "dpt": "1.001",
+        "zigbee": "FB DAB Info On Off <- state"
+      },
+      {
+        "number": 5,
+        "name": "ValueStatus",
+        "text": "Brightness status",
+        "function": "Value",
+        "size": "1 Byte",
+        "flags": "CRT",
+        "dpt": "5.001",
+        "zigbee": "FB DAB Actual Dimming Value <- brightness, 0 while off"
+      },
+      {
+        "number": 6,
+        "name": "Identify",
+        "text": "Identify",
+        "function": "Trigger",
+        "size": "1 Bit",
+        "flags": "CW",
+        "dpt": "1.017",
+        "zigbee": "identify, models with flag 2 (manufacturer-specific object, not in FB DAB)"
+      },
+      {
+        "number": 7,
+        "name": "Available",
+        "text": "Zigbee device reachable",
+        "function": "Status",
+        "size": "1 Bit",
+        "flags": "CRT",
+        "dpt": "1.002",
+        "zigbee": "0.availability <- gateway (firmware avail.h): true while the device answers, false when not; the first true after linking only fills the shadow"
+      }
+    ],
+    "parameter_types": {
+      "PowerOn": {
+        "bits": 8,
+        "enum": [
+          [
+            0,
+            "off"
+          ],
+          [
+            1,
+            "on"
+          ],
+          [
+            2,
+            "toggle"
+          ],
+          [
+            3,
+            "previous"
+          ]
+        ]
+      },
+      "StartLevel": {
+        "bits": 8,
+        "enum": [
+          [
+            0,
+            "minimum"
+          ],
+          [
+            1,
+            "previous"
+          ],
+          [
+            2,
+            "fixed value"
+          ]
+        ]
+      },
+      "Percent": {
+        "bits": 8,
+        "number": {
+          "type": "unsignedInt",
+          "min": 1,
+          "max": 100
+        }
+      },
+      "YesNo": {
+        "bits": 8,
+        "enum": [
+          [
+            0,
+            "no"
+          ],
+          [
+            1,
+            "yes"
+          ]
+        ]
+      },
+      "Tenths": {
+        "bits": 8,
+        "number": {
+          "type": "unsignedInt",
+          "min": 0,
+          "max": 255
+        }
+      },
+      "Rate": {
+        "bits": 8,
+        "number": {
+          "type": "unsignedInt",
+          "min": 1,
+          "max": 255
+        }
+      }
+    },
+    "parameters": {
+      "segment_size": 10,
+      "block": {
+        "name": "General",
+        "text": "Zigbee dimmable light"
+      },
+      "list": [
+        {
+          "offset": 0,
+          "name": "PowerOnBehaviour",
+          "text": "Behaviour after mains power returns",
+          "type": "PowerOn",
+          "default": 1,
+          "zigbee": "1.power_on_behavior (Zigbee attribute)"
+        },
+        {
+          "offset": 1,
+          "name": "StartupLevel",
+          "text": "Brightness after mains power returns",
+          "type": "StartLevel",
+          "default": 1,
+          "zigbee": "1.level_config.current_level_startup: preset or value (models with flag 1)"
+        },
+        {
+          "offset": 2,
+          "name": "StartupLevelValue",
+          "text": "Fixed brightness after mains power returns (%)",
+          "type": "Percent",
+          "default": 100,
+          "zigbee": "1.level_config.current_level_startup as brightness"
+        },
+        {
+          "offset": 3,
+          "name": "SwitchOnValue",
+          "text": "Switch-on brightness (%)",
+          "type": "Percent",
+          "default": 100,
+          "zigbee": "gateway: FB DAB OSV"
+        },
+        {
+          "offset": 4,
+          "name": "MemoryFunction",
+          "text": "Switch on with the last brightness",
+          "type": "YesNo",
+          "default": 1,
+          "zigbee": "gateway: FB DAB MF"
+        },
+        {
+          "offset": 5,
+          "name": "MinimumValue",
+          "text": "Minimum brightness (%)",
+          "type": "Percent",
+          "default": 1,
+          "zigbee": "gateway: FB DAB MIN_SV"
+        },
+        {
+          "offset": 6,
+          "name": "MaximumValue",
+          "text": "Maximum brightness (%)",
+          "type": "Percent",
+          "default": 100,
+          "zigbee": "gateway: FB DAB MAX_SV"
+        },
+        {
+          "offset": 7,
+          "name": "RelativeOffEnable",
+          "text": "Relative dimming may switch off",
+          "type": "YesNo",
+          "default": 0,
+          "zigbee": "gateway: FB DAB ROE (brightness_move_onoff instead of brightness_move)"
+        },
+        {
+          "offset": 8,
+          "name": "TransitionTime",
+          "text": "Transition for switching and values (0.1 s)",
+          "type": "Tenths",
+          "default": 0,
+          "zigbee": "Zigbee2MQTT option transition (seconds), sent before each command"
+        },
+        {
+          "offset": 9,
+          "name": "DimmingRate",
+          "text": "Relative dimming rate (brightness steps per second)",
+          "type": "Rate",
+          "default": 60,
+          "zigbee": "1.brightness_move rate"
+        }
+      ]
+    },
+    "embed": {
+      "carrier": "data"
+    }
+  }
+}

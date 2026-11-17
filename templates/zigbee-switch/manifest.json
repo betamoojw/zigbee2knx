@@ -1,0 +1,365 @@
+{
+  "schema": "knxgw-template/0",
+  "id": "zigbee.class.switch",
+  "version": 2,
+  "title": "Zigbee switch as a KNX switching actuator",
+  "radio": "zigbee",
+  "match": {
+    "class": "switch",
+    "zigbeeModel": [
+      "ASKVADER on/off switch",
+      "GRILLPLATS Plug",
+      "GRILLPLATS Plug\u0000",
+      "TRADFRI control outlet",
+      "TRETAKT Smart plug"
+    ]
+  },
+  "behaviour": {
+    "language": "berry",
+    "file": "zigbee-switch.be"
+  },
+  "datapoints": {
+    "_doc": "<endpoint>.<Zigbee2MQTT property path>; endpoint 0 = device identity and availability (gateway: true/false). zcl.write: 'cluster,attribute,type,manufacturer,value' in hex, written as it is (gateway zlink.c).",
+    "write": [
+      "1.state",
+      "1.power_on_behavior",
+      "1.identify",
+      "1.zcl.write"
+    ],
+    "events": [
+      "0.zigbeeModel",
+      "0.availability",
+      "1.state"
+    ],
+    "master": []
+  },
+  "products": [
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI control outlet",
+      "zigbeeModel": [
+        "TRADFRI control outlet"
+      ],
+      "entry": [
+        3,
+        ""
+      ],
+      "model": "E160x/E170x/E190x"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI control outlet",
+      "zigbeeModel": [
+        "TRADFRI control outlet"
+      ],
+      "entry": [
+        3,
+        ""
+      ],
+      "model": "E1603",
+      "white_label_of": "E160x/E170x/E190x"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI control outlet",
+      "zigbeeModel": [
+        "TRADFRI control outlet"
+      ],
+      "entry": [
+        3,
+        ""
+      ],
+      "model": "E1702/E1703",
+      "white_label_of": "E160x/E170x/E190x"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI control outlet",
+      "zigbeeModel": [
+        "TRADFRI control outlet"
+      ],
+      "entry": [
+        3,
+        ""
+      ],
+      "model": "E1704",
+      "white_label_of": "E160x/E170x/E190x"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI control outlet",
+      "zigbeeModel": [
+        "TRADFRI control outlet"
+      ],
+      "entry": [
+        3,
+        ""
+      ],
+      "model": "E1705",
+      "white_label_of": "E160x/E170x/E190x"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI control outlet",
+      "zigbeeModel": [
+        "TRADFRI control outlet"
+      ],
+      "entry": [
+        3,
+        ""
+      ],
+      "model": "E1706/E1707/E1708/E1709/E1710",
+      "white_label_of": "E160x/E170x/E190x"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRADFRI control outlet",
+      "zigbeeModel": [
+        "TRADFRI control outlet"
+      ],
+      "entry": [
+        3,
+        ""
+      ],
+      "model": "E1902",
+      "white_label_of": "E160x/E170x/E190x"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "ASKVADER on/off switch",
+      "zigbeeModel": [
+        "ASKVADER on/off switch"
+      ],
+      "entry": [
+        3,
+        ""
+      ],
+      "model": "E1836"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRETAKT smart plug",
+      "zigbeeModel": [
+        "TRETAKT Smart plug"
+      ],
+      "entry": [
+        19,
+        "fc85,0000,10,117c"
+      ],
+      "model": "E22x4"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRETAKT smart plug",
+      "zigbeeModel": [
+        "TRETAKT Smart plug"
+      ],
+      "entry": [
+        19,
+        "fc85,0000,10,117c"
+      ],
+      "model": "E2204",
+      "white_label_of": "E22x4"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TRETAKT smart plug",
+      "zigbeeModel": [
+        "TRETAKT Smart plug"
+      ],
+      "entry": [
+        19,
+        "fc85,0000,10,117c"
+      ],
+      "model": "E2214",
+      "white_label_of": "E22x4"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TOFSMYGGA/GRILLPLATS smart plug (Matter)",
+      "zigbeeModel": [
+        "GRILLPLATS Plug\u0000",
+        "GRILLPLATS Plug"
+      ],
+      "entry": [
+        3,
+        ""
+      ],
+      "model": "E2435/E2491"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TOFSMYGGA/GRILLPLATS smart plug (Matter)",
+      "zigbeeModel": [
+        "GRILLPLATS Plug\u0000",
+        "GRILLPLATS Plug"
+      ],
+      "entry": [
+        3,
+        ""
+      ],
+      "model": "E2435",
+      "white_label_of": "E2435/E2491"
+    },
+    {
+      "vendor": "IKEA",
+      "description": "TOFSMYGGA/GRILLPLATS smart plug (Matter)",
+      "zigbeeModel": [
+        "GRILLPLATS Plug\u0000",
+        "GRILLPLATS Plug"
+      ],
+      "entry": [
+        3,
+        ""
+      ],
+      "model": "E2491",
+      "white_label_of": "E2435/E2491"
+    }
+  ],
+  "generated": {
+    "by": "distill/z2m_to_knx.py v3",
+    "from": "zigbee-herdsman-converters 26.57.0",
+    "models": 4
+  },
+  "sources": [
+    "zigbee-herdsman-converters 26.57.0 (MIT, (c) Koen Kanters), distilled by distill/dump_z2m.cjs (facts only)",
+    "KNX Standard v3.0.0, 07_20_02 Lighting Actuators: FB Light Switching Actuator Basic (objects Switch On Off, Info On Off)",
+    "zigbee-herdsman-converters lib/ikea.js: manuSpecificIkeaSmartPlug 0xFC85, childLock 0x0000, IKEA_OF_SWEDEN 0x117C"
+  ],
+  "open": [
+    "LED setting of the IKEA plugs left out: Zigbee2MQTT reads the same attribute as 'led enable' from firmware 2.4.25 and as 'led disable' before; not checked on a device",
+    "Plugs with metering (IKEA INSPELNING) are not in this class"
+  ],
+  "knx": {
+    "manufacturer": "M-00FA",
+    "language": "en",
+    "application": {
+      "name": "Zigbee switch",
+      "number": 49155,
+      "version": 2,
+      "replaces": [
+        1
+      ],
+      "mask": "MV-07B0",
+      "order_info": "ZB-SWITCH"
+    },
+    "hardware": {
+      "name": "Zigbee switch",
+      "serial_number": "49155",
+      "version": 1,
+      "bus_current_ma": 0,
+      "order_number": "ZB-SWITCH"
+    },
+    "catalog": {
+      "section": "Devices",
+      "section_number": "1",
+      "item_number": "1"
+    },
+    "objects": [
+      {
+        "number": 1,
+        "name": "Switch",
+        "text": "Switch",
+        "function": "On/Off",
+        "size": "1 Bit",
+        "flags": "CW",
+        "dpt": "1.001",
+        "zigbee": "Switch On Off -> state"
+      },
+      {
+        "number": 2,
+        "name": "SwitchStatus",
+        "text": "Switch status",
+        "function": "On/Off",
+        "size": "1 Bit",
+        "flags": "CRT",
+        "dpt": "1.001",
+        "zigbee": "Info On Off <- state"
+      },
+      {
+        "number": 3,
+        "name": "Identify",
+        "text": "Identify",
+        "function": "Trigger",
+        "size": "1 Bit",
+        "flags": "CW",
+        "dpt": "1.017",
+        "zigbee": "identify, models with flag 2"
+      },
+      {
+        "number": 4,
+        "name": "Available",
+        "text": "Zigbee device reachable",
+        "function": "Status",
+        "size": "1 Bit",
+        "flags": "CRT",
+        "dpt": "1.002",
+        "zigbee": "0.availability <- gateway (firmware avail.h): true while the device answers, false when not; the first true after linking only fills the shadow"
+      }
+    ],
+    "parameter_types": {
+      "PowerOn": {
+        "bits": 8,
+        "enum": [
+          [
+            0,
+            "off"
+          ],
+          [
+            1,
+            "on"
+          ],
+          [
+            2,
+            "toggle"
+          ],
+          [
+            3,
+            "previous"
+          ]
+        ]
+      },
+      "YesNo": {
+        "bits": 8,
+        "enum": [
+          [
+            0,
+            "no"
+          ],
+          [
+            1,
+            "yes"
+          ]
+        ]
+      }
+    },
+    "parameters": {
+      "segment_size": 2,
+      "block": {
+        "name": "General",
+        "text": "Zigbee switch"
+      },
+      "list": [
+        {
+          "offset": 0,
+          "name": "PowerOnBehaviour",
+          "text": "Behaviour after mains power returns",
+          "type": "PowerOn",
+          "default": 1,
+          "zigbee": "1.power_on_behavior (Zigbee attribute; models with flag 1; written once the device has told its model)"
+        },
+        {
+          "offset": 1,
+          "name": "ChildLock",
+          "text": "Child lock (for devices that have one)",
+          "type": "YesNo",
+          "default": 0,
+          "zigbee": "1.zcl.write of the model's child lock attribute (models with flag 16; written once the device has told its model)"
+        }
+      ]
+    },
+    "embed": {
+      "carrier": "data"
+    }
+  }
+}

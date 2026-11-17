@@ -1,0 +1,5 @@
+## Pinned to 2.0.1. 2.1.x removes joiners without TCLK exchange; which one the firmware takes is decided by a test
+## with the LED1934G3.
+dependencies:
+  espressif/esp-zigbee-lib: "==2.0.1"
+  idf: ">=6.0.0"

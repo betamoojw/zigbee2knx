@@ -1,0 +1,23 @@
+# build output
+build/
+build-*/
+managed_components/
+sdkconfig
+sdkconfig.old
+__pycache__/
+*.pyc
+venv/
+*.tmp
+# product files and firmware images are release assets, not sources
+*.knxprod
+*.bin
+*.elf
+# never in this repository
+*.log
+*.key
+*.pem
+.env
+.env.*
+schematics/
+datasheets/
+datasheet/
