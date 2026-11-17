@@ -81,7 +81,8 @@ The device classes in the catalog, one product per model:
 
 ![ETS catalog with the Zigbee2KNX sections and the IKEA lights](docs/images/ets-catalog.png)
 
-A gateway, two lights and a plug, each a KNX device with its own address, application and serial number:
+A gateway, two lights and a plug, each a KNX device with its own individual address and application (serial numbers
+blanked out):
 
 ![ETS device list with the gateway and three Zigbee devices](docs/images/ets-devices.png)
 
@@ -102,7 +103,7 @@ The title image is a generated scene with a real ETS screenshot on the laptop.
 
 ## Hardware
 
-Runs best with the busware **TUL32** (KNX TP, powered over USB) and the bus-powered **TULX32** (experimental, see [Status](#status)): <https://busware.de>.
+Runs best with the busware **TUL32** (KNX TP, powered over USB) and, once tested, the bus-powered **TULX32** (see [Status](#status)): <https://busware.de>.
 
 Other ESP32-C6 boards with an NCN5130 need their pins in [`firmware/main/board.h`](firmware/main/board.h).
 
@@ -110,12 +111,13 @@ Other ESP32-C6 boards with an NCN5130 need their pins in [`firmware/main/board.h
 
 1. **Flash the firmware** from the browser with the [web installer](https://tostmann.github.io/zigbee2knx/) (Chrome,
    Edge or Opera), or with esptool from the images attached to the [releases](../../releases); to build it yourself
-   see [docs/building-firmware.md](docs/building-firmware.md). The TULX32 has no USB port for this; it installs
-   firmware from its recovery system ([install.busware.de/tulx](https://install.busware.de/tulx/)).
+   see [docs/building-firmware.md](docs/building-firmware.md). There is no release image for the TULX32 yet (see
+   [Status](#status)).
 2. **Build the product files** with OpenKNXproducer and your ETS, as described
    [below](#building-the-product-files), and import them into ETS.
 3. **Add the gateway.** Insert "Zigbee gateway (TUL32)" into a line, program its individual address (button S1),
-   set the range of device numbers for Zigbee devices and download it.
+   set the range of device numbers for Zigbee devices and download it. Keep that range free of other KNX devices:
+   the gateway takes every address ETS programs in it as a request to pair a Zigbee device.
 4. **Add a Zigbee device.** Insert its product (for example "IKEA LED1934G3 …") into the same line with an address in
    that range and program the individual address. While ETS waits, reset the Zigbee device or put it into pairing
    mode: it joins and takes the address. Then download the application and link the group objects.
@@ -144,8 +146,9 @@ on your PC:
    sections Gateway, Lights, Plugs and switches and Remotes.
 
 The files use M-00FA, the manufacturer ID of the KNX Association, as open-source KNX projects do; they are not
-registered with the KNX Association. The same XML gives the same applications in every build, so product files built
-on different PCs can be used side by side (checked with OpenKNXproducer 4.3.12 and ETS 6.4.1).
+registered with the KNX Association. Two builds of the same XML, with OpenKNXproducer 4.3.12 and the signing library
+of ETS 6.4.1, gave the same applications, so product files built on different PCs can be used side by side; other
+versions of the signing library have not been compared.
 [docs/building-knxprod.md](docs/building-knxprod.md) covers adding products and new application versions.
 
 ## Supported devices
@@ -173,8 +176,12 @@ objects. With earlier development builds of 0.6 also: partial downloads, the "Zi
 directions, unloading an address (the device is removed and asked to leave the Zigbee network), and updating a device
 to a newer application version. Devices on the bench: IKEA LED1934G3, LED2201G8 and E2204.
 
-Not done yet: the remote class with ETS, long frames through line couplers and USB interfaces, the TULX32's bus
-current with Zigbee running, and installations with more than a few real Zigbee devices. Known issues are listed in
+On a TULX32 the firmware has started, formed its Zigbee network and received telegrams from the bus. Sending on the
+bus, pairing, downloads and the bus current with Zigbee running have not been tested on it, so this release has no
+image for it.
+
+Not done yet: the remote class with ETS, long frames through line couplers and USB interfaces, the TULX32 (see
+above), and installations with more than a few real Zigbee devices. Known issues are listed in
 [docs/getting-started.md](docs/getting-started.md#known-limitations).
 
 ## Repository

@@ -25,6 +25,10 @@ switches the gateway's programming mode, the LED is on while it is.
 | Pairing window for the object and the button (s) | 180 |
 | Long frames for downloads | Long frames, 55 octets |
 
+While binding from ETS is on, the gateway takes every individual address that ETS programs in its range as a request
+to pair a Zigbee device, also when the address is meant for an ordinary KNX device. Keep the range free of other
+devices, or switch the binding off while you program them.
+
 | No. | Object | DPT | |
 |---|---|---|---|
 | 1 | Zigbee pairing | 1.010 | opens and closes the pairing window |
@@ -94,7 +98,11 @@ a USB interface with long frames have not been tested yet; if one fails, set the
 
 ## Known limitations
 
-- TULX32: the bus current with Zigbee running has not been measured.
+- TULX32: the firmware has started, formed its Zigbee network and received telegrams; sending on the bus, pairing,
+  downloads and the bus current with Zigbee running have not been tested, and there is no release image for it.
+- Loading a new version of a device class while another device still runs the old one needs memory for both. With
+  three classes loaded this may not fit, and the device updated last is then left without a class (worked out from
+  the code, not yet seen on a device).
 - The remote class (0xC004) has not run with ETS.
 - Relative colour temperature with step code 1 moves until a stop telegram and is not held within the parameterized
   colour temperature range; the other step codes are.
