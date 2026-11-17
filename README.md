@@ -161,6 +161,9 @@ on different PCs can be used side by side (checked with OpenKNXproducer 4.3.12 a
 Each class also has a generic product. A model the class does not list runs with the class defaults; the gateway
 reports it. The full list is in [docs/devices.md](docs/devices.md).
 
+Why IKEA? For a start, just because those devices were lying around on the bench — no dedication :-) Other makes are
+welcome, see [Concept](#concept).
+
 ## Status
 
 What has run with ETS 6.4.1 on a TUL32 with the firmware of this source and the applications in `producer/`
