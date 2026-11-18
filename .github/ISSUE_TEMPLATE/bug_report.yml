@@ -1,0 +1,62 @@
+name: Bug report
+description: The gateway, a Zigbee device or a download does not do what the documentation says.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please look at the [known limitations](https://github.com/tostmann/zigbee2knx/blob/main/docs/getting-started.md#known-limitations) first. Questions about setting up belong in [Discussions](https://github.com/tostmann/zigbee2knx/discussions/categories/q-a). Report a security problem privately as described in [SECURITY.md](https://github.com/tostmann/zigbee2knx/blob/main/SECURITY.md), not here.
+  - type: dropdown
+    id: board
+    attributes:
+      label: Board
+      options:
+        - TUL32
+        - TULX32
+        - another ESP32-C6 board with an NCN5130
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware version
+      description: "The release, or the version in the line the console prints after a start: `zigbee2knx 0.6.0, IDF ...`"
+      placeholder: "0.6.0"
+    validations:
+      required: true
+  - type: input
+    id: ets
+    attributes:
+      label: ETS version
+      placeholder: "6.4.1"
+  - type: input
+    id: devices
+    attributes:
+      label: Zigbee devices involved
+      description: Their products in ETS, for example "IKEA LED1934G3".
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: textarea
+    id: knx
+    attributes:
+      label: Gateway objects and ETS
+      description: The values of the gateway's objects "Last message" (11) and "Fault" (12), and what ETS reported, if anything.
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output
+      description: The output of `gw`, `vdev`, `pair`, `zb` and `knx`, and the lines printed around the problem ([Console](https://github.com/tostmann/zigbee2knx/blob/main/docs/getting-started.md#console)). Remove what you do not want to publish.
+      render: text

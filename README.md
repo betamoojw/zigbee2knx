@@ -187,6 +187,11 @@ Not done yet: the pairing window opened by the gateway's button, the remote clas
 couplers and USB interfaces, the TULX32 (see above), and installations with more than a few real Zigbee devices. Known
 issues are listed in [docs/getting-started.md](docs/getting-started.md#known-limitations).
 
+## Questions and issues
+
+Questions, ideas and reports of what runs go to [Discussions](../../discussions); bugs and requests for new
+devices to [Issues](../../issues/new/choose). Report security problems privately, see [SECURITY.md](SECURITY.md).
+
 ## Repository
 
 | Directory | Content |

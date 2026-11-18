@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question
+    url: https://github.com/tostmann/zigbee2knx/discussions/categories/q-a
+    about: Setting up the gateway, ETS, pairing a device.
+  - name: Idea or experience
+    url: https://github.com/tostmann/zigbee2knx/discussions
+    about: Ideas, installations and devices that work.

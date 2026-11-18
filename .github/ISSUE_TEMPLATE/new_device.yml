@@ -1,0 +1,53 @@
+name: New Zigbee device
+description: A Zigbee device that no product lists, or that needs more than its class gives it.
+title: "[Device]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A model that no product lists may already run with the generic product of its class ("Zigbee dimmable light" and so on); the gateway then reports `MODEL` on its object "Last message". See [docs/devices.md](https://github.com/tostmann/zigbee2knx/blob/main/docs/devices.md).
+  - type: input
+    id: model
+    attributes:
+      label: Manufacturer and model
+      description: As printed on the device or its package, for example "IKEA LED1934G3".
+    validations:
+      required: true
+  - type: input
+    id: z2m
+    attributes:
+      label: Zigbee2MQTT page
+      description: The device's page on zigbee2mqtt.io, if there is one.
+      placeholder: "https://www.zigbee2mqtt.io/devices/..."
+  - type: dropdown
+    id: generic
+    attributes:
+      label: With the generic product of a class
+      options:
+        - not tried
+        - runs
+        - runs in part
+        - does not run
+        - no class fits the device
+    validations:
+      required: true
+  - type: textarea
+    id: knx
+    attributes:
+      label: What it should do in KNX
+      description: The functions you need as group objects, for example switching, brightness, colour temperature, a measured value.
+    validations:
+      required: true
+  - type: textarea
+    id: basic
+    attributes:
+      label: What the device reports
+      description: "If the device has joined the gateway, the lines the console prints after `basic <short address>` (manufacturer, model, date code, software build). The short address is in the line `zb: device announce: 0x...` printed when the device joins, or in the output of `links`."
+      render: text
+  - type: checkboxes
+    id: test
+    attributes:
+      label: Testing
+      options:
+        - label: I can test a development build with this device.
