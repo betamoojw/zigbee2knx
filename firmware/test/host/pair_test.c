@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Dirk Tostmann
 // Host test of main/pair.c: what happens to the Zigbee device when its virtual device goes (points 9 and 10 there),
 // and further cases (a join without an announce, a slow key exchange, an opening from elsewhere, two assignments in
 // a row, a restart between unloading and removal).

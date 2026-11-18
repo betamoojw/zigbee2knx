@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Dirk Tostmann
 #define main link_sim_main
 #include "link_sim.c"
 #undef main

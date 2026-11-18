@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Dirk Tostmann
 /* be_port_idf.c — Berry-VM port glue for ESP-IDF.
  *
  * Routes Berry's `be_writebuffer` to esp_rom_printf so script `print(...)`

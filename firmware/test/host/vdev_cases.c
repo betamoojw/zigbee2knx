@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Dirk Tostmann
 // Targeted cases against the real vdev.c (host harness). Output: plain text on stdout.
 #define NO_MAIN
 #include "vdev_fuzz.c"

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Dirk Tostmann
 // random octet streams and random frames into the real receive/transmit task (ASan/UBSan)
 #define main link_sim_main
 #include "link_sim.c"

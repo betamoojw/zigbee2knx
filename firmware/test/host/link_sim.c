@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Dirk Tostmann
 // Host harness for main/knx_link.c: the real receive/transmit task runs against a small model of the NCN5130 UART
 // side and a virtual clock. What the model assumes about the chip is marked.
 #define _GNU_SOURCE

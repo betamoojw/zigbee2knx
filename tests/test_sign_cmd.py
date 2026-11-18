@@ -71,8 +71,8 @@ def main():
         out_key, out_cmd = os.path.join(td, "key.xml"), os.path.join(td, "cmd.xml")
 
         print("an external signer gives the same file as the key itself")
-        r1 = run(GEN, TEMPLATE, "--sign-key", pem, "-o", out_key)
-        r2 = run(GEN, TEMPLATE, "--sign-cmd", cmd, "--sign-pub", pub, "-o", out_cmd)
+        r1 = run(GEN, TEMPLATE, "--sign-key", pem, "--app-number", "0xCF03", "-o", out_key)
+        r2 = run(GEN, TEMPLATE, "--sign-cmd", cmd, "--sign-pub", pub, "--app-number", "0xCF03", "-o", out_cmd)
         check("both runs succeed", r1.returncode == 0 and r2.returncode == 0, r1.stderr[-300:] + r2.stderr[-300:])
         check("byte for byte the same producer input (deterministic signatures)",
               r1.returncode == 0 and r2.returncode == 0 and open(out_key, "rb").read() == open(out_cmd, "rb").read())

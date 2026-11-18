@@ -18,7 +18,7 @@ A new version keeps the group objects and parameters of the earlier ones with th
 
 ## Dimmable light (0xC001)
 
-23 models. Catalog: Zigbee2KNX › Lights. Relative dimming (DPT 3.007) moves by the step the telegram carries, 1/2^(code-1) of the range, within the minimum and maximum brightness.
+23 products from 23 Zigbee2MQTT definitions. Catalog: Zigbee2KNX › Lights. Relative dimming (DPT 3.007) moves by the step the telegram carries, 1/2^(code-1) of the range, within the minimum and maximum brightness. The transition time applies to switching on and to brightness values; switching off is the plain On/Off command Off, which carries no transition time.
 
 | Model | Description |
 |---|---|
@@ -48,7 +48,7 @@ A new version keeps the group objects and parameters of the earlier ones with th
 
 ## White spectrum light (0xC002)
 
-48 models. Catalog: Zigbee2KNX › Lights. Relative dimming of brightness and of colour temperature moves by the step the telegram carries; step code 1 of the colour temperature fades until a stop telegram or the end of the lamp's range.
+48 products from 35 Zigbee2MQTT definitions; the others are white-label names and order numbers of the same devices. Catalog: Zigbee2KNX › Lights. Relative dimming of brightness and of colour temperature moves by the step the telegram carries; step code 1 of the colour temperature fades until a stop telegram or the end of the lamp's range. The transition time applies to switching on and to brightness values, to colour temperature only with "Use the transition time for colour temperature"; switching off is the plain On/Off command Off, which carries no transition time. The parameters "Minimum colour temperature" and "Maximum colour temperature" default to 1000 K and 10000 K, which means no limit: the lamp's own range applies on top of them in any case.
 
 | Model | Description |
 |---|---|
@@ -103,7 +103,7 @@ A new version keeps the group objects and parameters of the earlier ones with th
 
 ## Switch and plug (0xC003)
 
-14 models. Catalog: Zigbee2KNX › Plugs and switches.
+14 products from 4 Zigbee2MQTT definitions; the others are white-label names and order numbers of the same devices. Catalog: Zigbee2KNX › Plugs and switches.
 
 | Model | Description |
 |---|---|
@@ -124,7 +124,7 @@ A new version keeps the group objects and parameters of the earlier ones with th
 
 ## Remote (experimental) (0xC004)
 
-6 models. Catalog: Zigbee2KNX › Remotes.
+6 products from 6 Zigbee2MQTT definitions. Catalog: Zigbee2KNX › Remotes.
 
 - A Zigbee "step" becomes the dimming step (DPT 3.007) nearest to the step size the remote sends.
 - Battery: the remotes report BatteryPercentageRemaining in half percent, except the ones Zigbee2MQTT reads as percent: the ICTC-G-1 always, the E1743, E1744, E1812 and E1841 with a firmware below 2.4.0. The gateway reads the firmware version from the device.

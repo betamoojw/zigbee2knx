@@ -1,11 +1,16 @@
 # The web installer on GitHub Pages: flasher/index.html with the TUL32 images of a release. The images are taken
 # from the release assets, never from the repository. Pages has to be set to "GitHub Actions" once.
+# ESP Web Tools is served with the page, from the npm package of a fixed version whose checksum is checked here.
 name: Web installer
 
 on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, e.g. v0.6.0"
+        required: true
 
 permissions:
   contents: read
@@ -23,19 +28,24 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - name: Page and images of the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          EWT_VERSION: "10.5.2"
+          EWT_SHA512: "8b9aac1efd5b9eb6fff6098a10deea21a0d330e332e8e72dae01555d2b6b536b3bf5ead8d99ec82b276f78d9347838504daadfc32478797b29394205ea461ac2"
         run: |
           set -euo pipefail
-          tag="${TAG:-$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName -q '.[0].tagName')}"
-          ver="${tag#v}"
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "not a release tag: '$TAG'" >&2
+            exit 1
+          fi
+          ver="${TAG#v}"
           mkdir -p site
           sed "s/@VERSION@/${ver}/g" flasher/index.html > site/index.html
           for part in tul32-bootloader tul32-partition-table tul32; do
-            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir site --pattern "zigbee2knx-${ver}-${part}.bin"
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir site --pattern "zigbee2knx-${ver}-${part}.bin"
           done
           python3 - "$ver" > site/manifest.json <<'PY'
           import json, sys
@@ -46,10 +56,17 @@ jobs:
                                         "parts": [{"path": f"zigbee2knx-{v}-{p}.bin", "offset": o} for p, o in parts]}]},
                            indent=2))
           PY
-          ls -l site
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+          curl -fsSL -o ewt.tgz "https://registry.npmjs.org/esp-web-tools/-/esp-web-tools-${EWT_VERSION}.tgz"
+          echo "${EWT_SHA512}  ewt.tgz" | sha512sum -c -
+          mkdir ewt
+          tar -xzf ewt.tgz -C ewt
+          mkdir site/esp-web-tools
+          cp ewt/package/dist/web/*.js site/esp-web-tools/
+          cp ewt/package/LICENSE site/esp-web-tools/LICENSE
+          ls -l site site/esp-web-tools
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b  # v5.0.0
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3.0.1
         with:
           path: site
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4.0.5

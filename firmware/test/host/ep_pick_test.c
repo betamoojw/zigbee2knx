@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Dirk Tostmann
 // Host test of the endpoint rule (main/ep_pick.h). The descriptors are made up to cover the rule; none of them was
 // captured from a real device. Ends with "endpoint checks: N passed, M failed".
 #include <stdio.h>

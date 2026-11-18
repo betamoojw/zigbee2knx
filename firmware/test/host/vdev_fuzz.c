@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Dirk Tostmann
 // Host harness for main/vdev.c.
 // The real source file is included unchanged; FreeRTOS, NVS, the link and Berry are stubs.
 #define _GNU_SOURCE

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Dirk Tostmann
 // Behaviour checks against the real vdev.c and gw.c: what the device server and the gateway's own device answer
 // (host harness)
 #define WITH_GW

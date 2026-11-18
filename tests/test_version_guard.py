@@ -30,6 +30,7 @@ from knxprod_gen import version_clash  # noqa: E402
 GEN = os.path.join(ROOT, "tools", "knxprod_gen.py")
 PRODUCTS = os.path.join(ROOT, "distill", "knxprod_products.py")
 GATEWAY = os.path.join(ROOT, "producer", "gateway_build.py")
+VARIANT = "0xCF03"   # a test variant of the switch class: a number of its own, not in producer/issued.json
 failed = 0
 count = 0
 
@@ -66,14 +67,14 @@ def main():
         check("the same payload gives the same signature", sign(payload) == sign(payload))
         check("another payload gives another signature", sign(payload)[1] != sign(payload + b" ")[1])
         a, b = os.path.join(td, "a.xml"), os.path.join(td, "b.xml")
-        ra = run(GEN, os.path.join(ROOT, "templates", "zigbee-switch"), "--sign-key", pem, "-o", a)
-        rb = run(GEN, os.path.join(ROOT, "templates", "zigbee-switch"), "--sign-key", pem, "-o", b)
+        ra = run(GEN, os.path.join(ROOT, "templates", "zigbee-switch"), "--sign-key", pem, "--app-number", VARIANT, "-o", a)
+        rb = run(GEN, os.path.join(ROOT, "templates", "zigbee-switch"), "--sign-key", pem, "--app-number", VARIANT, "-o", b)
         check("two generator runs succeed", ra.returncode == 0 and rb.returncode == 0, ra.stderr + rb.stderr)
         same = ra.returncode == 0 and rb.returncode == 0 and open(a, "rb").read() == open(b, "rb").read()
         check("two runs over an unchanged template write the same file", same)
 
         print("an output with the same version and other content is not overwritten")
-        r = run(GEN, os.path.join(ROOT, "templates", "zigbee-switch"), "--sign-key", pem, "-o", a)
+        r = run(GEN, os.path.join(ROOT, "templates", "zigbee-switch"), "--sign-key", pem, "--app-number", VARIANT, "-o", a)
         check("the generator writes over its own identical output", r.returncode == 0, r.stderr)
         text = open(a, encoding="utf-8").read()
         changed = text.replace("<Data>", "<Data>A", 1)
@@ -83,11 +84,21 @@ def main():
             text, changed.replace('ApplicationVersion="', 'ApplicationVersion="9', 1)) is None)
         with open(b, "w", encoding="utf-8") as f:
             f.write(changed)
-        r = run(GEN, os.path.join(ROOT, "templates", "zigbee-switch"), "--sign-key", pem, "-o", b)
+        r = run(GEN, os.path.join(ROOT, "templates", "zigbee-switch"), "--sign-key", pem, "--app-number", VARIANT, "-o", b)
         check("the generator refuses to overwrite it", r.returncode != 0 and "exists in the output" in r.stderr, r.stderr)
-        r = run(GEN, os.path.join(ROOT, "templates", "zigbee-switch"), "--sign-key", pem, "-o", b, "--overwrite-version")
+        r = run(GEN, os.path.join(ROOT, "templates", "zigbee-switch"), "--sign-key", pem, "--app-number", VARIANT, "-o", b, "--overwrite-version")
         check("--overwrite-version overwrites it", r.returncode == 0 and open(b, "rb").read() == open(a, "rb").read(),
               r.stderr)
+
+        print("the generator alone keeps to the versions given out")
+        c = os.path.join(td, "c.xml")
+        r = run(GEN, os.path.join(ROOT, "templates", "zigbee-switch"), "--sign-key", pem, "-o", c)
+        check("a version given out, signed with another key into a new file, is refused",
+              r.returncode != 0 and "has been given out" in r.stderr, r.stderr[-300:])
+        r = run(GEN, os.path.join(ROOT, "templates", "zigbee-switch"), "--sign-key", pem, "-o", c, "--overwrite-version")
+        check("--overwrite-version does not change that", r.returncode != 0 and "has been given out" in r.stderr,
+              r.stderr[-300:])
+        check("nothing was written", not os.path.exists(c))
 
         print("the producer inputs of this tree are protected")
         for c in ("zigbee-dimmable-light", "zigbee-white-spectrum-light", "zigbee-switch", "zigbee-remote"):

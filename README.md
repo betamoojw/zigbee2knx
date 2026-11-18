@@ -66,14 +66,14 @@ alike share one class, and what differs between them is a table in the class's B
 product files.
 
 **Why the programs are signed.** Berry is no sandbox: a program in the gateway can do what the firmware can, on the
-KNX bus and in the Zigbee network. So the gateway runs only programs signed with a key compiled into its firmware.
-For the images of this project these are the release keys, whose private halves exist only in two hardware keys. A
-product file whose program was changed or comes from someone else is refused, and the download ends with an error in
-ETS: importing a product file from an unknown source cannot bring code into an installation. Products added to an
-existing class keep the signed program as it is and need no key. Whoever wants to run programs of their own builds
-the firmware with their own key ([docs/templates.md](docs/templates.md#templates-of-your-own)). This signature is
-not the one ETS checks on a `.knxprod`: that one covers the product data for ETS; the program's signature protects
-the gateway.
+KNX bus and in the Zigbee network. So the gateway runs only programs signed with a key compiled into its firmware. For
+the images of this project these are the release keys, whose private halves were created in memory only, burned into
+two hardware keys and then destroyed. A product file whose program was changed or comes from someone else is refused,
+and the download ends with an error in ETS: importing a product file from an unknown source cannot bring code into an
+installation. Products added to an existing class keep the signed program as it is and need no key. Whoever wants to
+run programs of their own builds the firmware with their own key
+([docs/templates.md](docs/templates.md#templates-of-your-own)). This signature is not the one ETS checks on a
+`.knxprod`: that one covers the product data for ETS; the program's signature protects the gateway.
 
 ## In ETS
 
@@ -99,7 +99,7 @@ The gateway's diagnostic objects with their last values:
 
 ![Group addresses of the gateway's diagnostic objects](docs/images/ets-gateway-diagnostics.png)
 
-The title image is a generated scene with a real ETS screenshot on the laptop.
+The title image is an illustration; the laptop shows a real ETS screenshot.
 
 ## Hardware
 
@@ -156,11 +156,12 @@ versions of the signing library have not been compared.
 | Application | Class | Products |
 |---|---|---|
 | 0xC000 | Zigbee gateway | the gateway itself |
-| 0xC001 | dimmable light | 23 IKEA models |
-| 0xC002 | white spectrum light | 48 IKEA models |
-| 0xC003 | switch and plug | 14 IKEA models |
-| 0xC004 | remote (experimental) | 6 IKEA models |
+| 0xC001 | dimmable light | 23 IKEA products (23 Zigbee2MQTT definitions) |
+| 0xC002 | white spectrum light | 48 IKEA products (35 Zigbee2MQTT definitions) |
+| 0xC003 | switch and plug | 14 IKEA products (4 Zigbee2MQTT definitions) |
+| 0xC004 | remote (experimental) | 6 IKEA products (6 Zigbee2MQTT definitions) |
 
+One Zigbee2MQTT definition can stand for several products: the white-label names and order numbers of the same device.
 Each class also has a generic product. A model the class does not list runs with the class defaults; the gateway
 reports it. The full list is in [docs/devices.md](docs/devices.md).
 
@@ -169,20 +170,22 @@ welcome, see [Concept](#concept).
 
 ## Status
 
-What has run with ETS 6.4.1 on a TUL32 with the firmware of this source and the applications in `producer/`
-(0xC000 v3, 0xC001 v3, 0xC002 v4, 0xC003 v3): import of the product files, a new project, downloads with long frames,
-pairing a plug from ETS, switching, dimming and colour temperature with status feedback, and the gateway's diagnostic
-objects. With earlier development builds of 0.6 also: partial downloads, the "Zigbee device reachable" object in both
-directions, unloading an address (the device is removed and asked to leave the Zigbee network), and updating a device
-to a newer application version. Devices on the bench: IKEA LED1934G3, LED2201G8 and E2204.
+What has run with ETS 6.4.1 on a TUL32 with the firmware of this source and the applications in `producer/` (0xC000
+v3, 0xC001 v3, 0xC002 v4, 0xC003 v3): import of the product files and of a project with these devices, downloads with
+long frames, pairing a plug from ETS, switching, brightness and colour temperature with status feedback, and the
+gateway's diagnostic objects. With earlier development builds of 0.6 also: partial downloads, the "Zigbee device
+reachable" object in both directions, unloading an address (the device is removed and asked to leave the Zigbee
+network), and updating a device to a newer application version. With development builds before 0.6: programming the
+gateway's address with its button S1, and inserting devices from the catalog. Devices on the bench: IKEA LED1934G3,
+LED2201G8 and E2204.
 
 On a TULX32 the firmware has started, formed its Zigbee network and received telegrams from the bus. Sending on the
 bus, pairing, downloads and the bus current with Zigbee running have not been tested on it, so this release has no
 image for it.
 
-Not done yet: the remote class with ETS, long frames through line couplers and USB interfaces, the TULX32 (see
-above), and installations with more than a few real Zigbee devices. Known issues are listed in
-[docs/getting-started.md](docs/getting-started.md#known-limitations).
+Not done yet: the pairing window opened by the gateway's button, the remote class with ETS, long frames through line
+couplers and USB interfaces, the TULX32 (see above), and installations with more than a few real Zigbee devices. Known
+issues are listed in [docs/getting-started.md](docs/getting-started.md#known-limitations).
 
 ## Repository
 

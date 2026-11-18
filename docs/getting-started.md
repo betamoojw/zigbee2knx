@@ -90,11 +90,12 @@ parameter to its default.
 
 ## Download times
 
-The gateway parameter "Long frames for downloads" sets what all virtual devices announce to ETS: standard frames
-(12 data octets per memory write), long frames of 55 octets (the default; every TP1 line coupler has to pass them) or
-of 66 octets. A full download of a white spectrum light took about 85 s with standard frames and 45 s with 66 octets
-(ETS 6.4.1, through a KNXnet/IP tunnel, no coupler); 55 octets has not been timed. Downloads through a line coupler or
-a USB interface with long frames have not been tested yet; if one fails, set the parameter to standard frames.
+The gateway parameter "Long frames for downloads" sets what all virtual devices announce to ETS: standard frames (12
+data octets per memory write), long frames of 55 octets (the default; every TP1 line coupler has to pass them) or of
+66 octets. A full download of a white spectrum light took about 85 s with standard frames and 45 s with 66 octets (ETS
+6.4.1, through a KNXnet/IP tunnel, no coupler); with 55 octets it took about 52 s, timed on the gateway's console from
+the connection to the restart. Downloads through a line coupler or a USB interface with long frames have not been
+tested yet; if one fails, set the parameter to standard frames.
 
 ## Known limitations
 

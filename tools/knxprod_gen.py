@@ -35,8 +35,9 @@ product files, so a section keeps its number and name in every file.
 
 Versions given out (producer/issued.json): an application that has been imported into an ETS keeps its ids and
 their meaning in every later version, a later version replaces all lower versions given out, and a version given out
-is never generated again with other content. issued_problems() checks a producer input against that list;
---issued-record prints the entry of a version after its import, for that list.
+is never generated again with other content. issued_problems() checks a producer input against that list, and -o
+never writes a version given out with other content, whatever the switches; --issued-record prints the entry of
+a version after its import, for that list.
 """
 from __future__ import annotations
 
@@ -714,6 +715,19 @@ def main():
         write_atomic(args.image, image(text))
         print(f"written {args.image}")
     if args.out:
+        # a version given out (producer/issued.json) is never written with other content, whatever the switches
+        # and the output file. ReplacesVersions is left out of the comparison: this generator writes "0", and
+        # distill/knxprod_products.py and producer/gateway_build.py set it afterwards (and check the rest of the
+        # list). Test variants with a number of their own (--app-number) are not in that list and pass.
+        issued = load_issued()
+        mn = application_meaning(text)
+        same = [e for e in issued.get("applications", []) if e["number"] == mn["number"] and e["version"] == mn["version"]]
+        if same:
+            want = " ".join(str(v) for v in issued_below(issued, mn["number"], mn["version"])) or "0"
+            as_given = re.sub(r'ReplacesVersions="[^"]*"', f'ReplacesVersions="{want}"', text, count=1)
+            if application_meaning(as_given)["sha256"] != same[0]["application_sha256"]:
+                sys.exit(f"knxprod_gen: {args.out}: not written: application 0x{mn['number']:04X} version "
+                         f"{mn['version']} has been given out ({same[0]['id']}) with other content")
         if os.path.exists(args.out) and not args.overwrite_version:
             clash = version_clash(open(args.out, encoding="utf-8").read(), text)
             if clash:

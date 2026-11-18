@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Dirk Tostmann
 // Host test of main/zlink.c: availability decisions turned into actions and the full interview, with the real link
 // task on a virtual clock and a queue that drops when full (as xQueueSend(..., 0)).
 // Ends with "zlink checks: N passed, M failed".

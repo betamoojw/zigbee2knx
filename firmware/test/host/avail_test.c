@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Dirk Tostmann
 // Host test of the availability rules (main/avail.h): scenarios on a virtual clock, every decision as the link task
 // makes it (a tick every 10 s, plus one right after something was heard or a send failed). Prints each case and ends
 // with "availability checks: N passed, M failed".
