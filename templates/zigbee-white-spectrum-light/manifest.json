@@ -1,7 +1,7 @@
 {
   "schema": "knxgw-template/0",
   "id": "zigbee.class.white_spectrum",
-  "version": 4,
+  "version": 6,
   "title": "Zigbee white spectrum light as a KNX dimming actuator with colour temperature",
   "radio": "zigbee",
   "match": {
@@ -109,6 +109,7 @@
     "write": [
       "1.state",
       "1.brightness",
+      "1.brightness_no_onoff",
       "1.brightness_move",
       "1.brightness_move_onoff",
       "1.transition",
@@ -904,7 +905,7 @@
         1,
         250,
         454,
-        15
+        31
       ],
       "model": "LED2201G8"
     },
@@ -976,8 +977,8 @@
     "zigbee-herdsman cluster lightingColorCtrl: colorTempPhysicalMin 0x400B, colorTempPhysicalMax 0x400C"
   ],
   "open": [
-    "MINCT/MAXCT do not limit relative colour temperature with step code 1: color_temp_move runs to the lamp's own limits or a stop",
     "A stop of relative colour temperature (Move Color Temperature, stop) ends a Move to Color Temperature still running on IKEA white spectrum lamps (Zigbee2MQTT lib/ikea.ts relies on it); other lamps not checked",
+    "brightness_no_onoff (models with flag 16) needs gateway firmware 0.6.1 or later; older firmware drops it, and such a lamp goes on at its last brightness",
     "Parameters live in host.state; after a VM restart the defaults apply until the next params call",
     "The radio adapter must deliver 0.zigbeeModel (and colorTempPhysicalMin/Max) as datapoints"
   ],
@@ -987,10 +988,12 @@
     "application": {
       "name": "Zigbee white spectrum light",
       "number": 49154,
-      "version": 4,
+      "version": 6,
       "replaces": [
         2,
-        3
+        3,
+        4,
+        5
       ],
       "mask": "MV-07B0",
       "order_info": "ZB-LIGHT-W"
@@ -1317,7 +1320,7 @@
         {
           "offset": 8,
           "name": "TransitionTime",
-          "text": "Transition for switching and values (0.1 s)",
+          "text": "Transition for switching on and for values (0.1 s)",
           "type": "Tenths",
           "default": 0,
           "zigbee": "Zigbee2MQTT option transition (seconds), sent before each command"
@@ -1333,7 +1336,7 @@
         {
           "offset": 10,
           "name": "CtMinimum",
-          "text": "Minimum colour temperature (K)",
+          "text": "Minimum colour temperature (K), 1000 = no limit",
           "type": "Kelvin",
           "default": 1000,
           "zigbee": "gateway: FB CTA MINCT; the lamp's own range applies on top"
@@ -1341,7 +1344,7 @@
         {
           "offset": 12,
           "name": "CtMaximum",
-          "text": "Maximum colour temperature (K)",
+          "text": "Maximum colour temperature (K), 10000 = no limit",
           "type": "Kelvin",
           "default": 10000,
           "zigbee": "gateway: FB CTA MAXCT; the lamp's own range applies on top"

@@ -44,6 +44,21 @@ static void retry_fire(void *arg)
     esp_zigbee_task_queue_post(form_cb, NULL);
 }
 
+// The TX power cap of the board (board.h: BOARD_ZB_TX_DBM; the TULX32 runs from the bus). Set when the stack starts,
+// and again once the network is formed or restored, because the header does not say whether forming or restoring keeps
+// it. Runs in the stack's task (signal handler): no lock to take.
+static void tx_cap(const char *when)
+{
+#ifdef BOARD_ZB_TX_DBM
+    int8_t now = 0;
+    ezb_nwk_set_tx_power(BOARD_ZB_TX_DBM);
+    ezb_nwk_get_tx_power(&now);
+    ESP_LOGI(TAG, "TX power capped at %d dBm (%s), reads back %d dBm", BOARD_ZB_TX_DBM, when, now);
+#else
+    (void)when;
+#endif
+}
+
 static void eui_str(const ezb_extaddr_t *a, char out[17])
 {
     snprintf(out, 17, "%02x%02x%02x%02x%02x%02x%02x%02x", a->u8[7], a->u8[6], a->u8[5], a->u8[4], a->u8[3],
@@ -252,6 +267,7 @@ static bool on_signal(const ezb_app_signal_t *sig)
     char eui[17];
     switch (t) {
     case EZB_ZDO_SIGNAL_SKIP_STARTUP:
+        tx_cap("stack started");
         ezb_bdb_start_top_level_commissioning(EZB_BDB_MODE_INITIALIZATION);
         return true;
     case EZB_BDB_SIGNAL_DEVICE_FIRST_START:
@@ -261,6 +277,7 @@ static bool on_signal(const ezb_app_signal_t *sig)
         if (st == EZB_BDB_STATUS_SUCCESS && !ezb_bdb_is_factory_new()) {
             s_up = true;
             ESP_LOGI(TAG, "network restored: channel %u, PAN 0x%04x", ezb_get_current_channel(), ezb_get_panid());
+            tx_cap("network restored");
         } else {
             ESP_LOGI(TAG, "%s (status %u), forming a network", ezb_app_signal_to_string(t), st);
             ezb_bdb_start_top_level_commissioning(EZB_BDB_MODE_NETWORK_FORMATION);
@@ -272,6 +289,7 @@ static bool on_signal(const ezb_app_signal_t *sig)
         if (s && s->status == EZB_BDB_STATUS_SUCCESS) {
             s_up = true;
             ESP_LOGI(TAG, "formed: channel %u, PAN 0x%04x", ezb_get_current_channel(), ezb_get_panid());
+            tx_cap("network formed");
             app_heap("zb_formed");
         } else {
             ESP_LOGW(TAG, "formation failed (status %u), retry in 1 s", s ? s->status : 0xff);
@@ -564,6 +582,11 @@ esp_err_t zb_permit_join(uint8_t seconds)
     return zb_permit_join_as(seconds, true);
 }
 
+bool zb_up(void)
+{
+    return s_up;
+}
+
 void zb_print(void)
 {
     uint8_t ch = 0;
@@ -638,7 +661,10 @@ esp_err_t zb_onoff(uint16_t dst, uint8_t ep, int what)
     return esp_zigbee_err_to_esp(e);
 }
 
-esp_err_t zb_level(uint16_t dst, uint8_t ep, uint8_t level, uint16_t tenths)
+// Move to Level with On/Off: a level above 0 switches the lamp on, 0 off. Without On/Off: On/Off is left alone, and the
+// command carries ExecuteIfOff (options mask and override bit 0), so that a lamp that is off takes the level too and an
+// On then brings it up to it.
+esp_err_t zb_level(uint16_t dst, uint8_t ep, uint8_t level, uint16_t tenths, bool with_onoff)
 {
     if (!s_up) {
         return ESP_ERR_INVALID_STATE;
@@ -649,7 +675,11 @@ esp_err_t zb_level(uint16_t dst, uint8_t ep, uint8_t level, uint16_t tenths)
     if (!esp_zigbee_lock_acquire(pdMS_TO_TICKS(1000))) {
         return ESP_ERR_TIMEOUT;
     }
-    ezb_err_t e = ezb_zcl_level_move_to_level_with_on_off_cmd_req(&cmd);
+    if (!with_onoff) {
+        cmd.payload.options_mask = 0x01;       // ExecuteIfOff
+        cmd.payload.options_override = 0x01;
+    }
+    ezb_err_t e = with_onoff ? ezb_zcl_level_move_to_level_with_on_off_cmd_req(&cmd) : ezb_zcl_level_move_to_level_cmd_req(&cmd);
     esp_zigbee_lock_release();
     return esp_zigbee_err_to_esp(e);
 }
@@ -850,10 +880,18 @@ esp_err_t zb_color_temp(uint16_t dst, uint8_t ep, uint16_t mired, uint16_t tenth
     if (!s_up) {
         return ESP_ERR_INVALID_STATE;
     }
-    // options mask 0: the lamp's own Options attribute decides whether it follows while it is off
+    // ExecuteIfOff for this command (OptionsMask and OptionsOverride, bit 0 each): a lamp that is off takes the colour
+    // temperature and shows it when it is switched on. The class sends it before it switches the lamp on ("colour
+    // temperature when switched on") and with KO 7 while the lamp is off. With the mask 0 the lamp's Options attribute
+    // decided, 0 by default, and the value got lost (review B, M1). Whether a lamp heeds the override is the lamp's
+    // affair: one of an older ZCL revision ignores the two octets as before. esp-zigbee-lib 2.0.1 puts both into every
+    // frame (its ezb_zcl_color_control_move_to_color_temperature_cmd_req appends colour temperature, transition time,
+    // mask and override): until now they went out as 00 00.
     ezb_zcl_color_control_move_to_color_temperature_cmd_t cmd = {.cmd_ctrl = cluster_ctrl(dst, ep)};
     cmd.payload.color_temperature_mireds = mired;
     cmd.payload.transition_time = tenths;
+    cmd.payload.options_mask = 1u << EZB_ZCL_COLOR_CONTROL_OPTIONS_EXECUTE_IF_OFF;
+    cmd.payload.options_override = 1u << EZB_ZCL_COLOR_CONTROL_OPTIONS_EXECUTE_IF_OFF;
     if (!esp_zigbee_lock_acquire(pdMS_TO_TICKS(1000))) {
         return ESP_ERR_TIMEOUT;
     }
@@ -862,17 +900,19 @@ esp_err_t zb_color_temp(uint16_t dst, uint8_t ep, uint16_t mired, uint16_t tenth
     return esp_zigbee_err_to_esp(e);
 }
 
-esp_err_t zb_color_temp_move(uint16_t dst, uint8_t ep, int dir, uint16_t rate)
+esp_err_t zb_color_temp_move(uint16_t dst, uint8_t ep, int dir, uint16_t rate, uint16_t min_mired, uint16_t max_mired)
 {
     if (!s_up) {
         return ESP_ERR_INVALID_STATE;
     }
-    // bounds 0: the lamp's own limits (ColorTempPhysicalMin/MaxMireds)
+    // bounds in mired; 0: the lamp's own limits (ColorTempPhysicalMin/MaxMireds)
     ezb_zcl_color_control_move_color_temperature_cmd_t cmd = {.cmd_ctrl = cluster_ctrl(dst, ep)};
     cmd.payload.move_mode = dir > 0 ? EZB_ZCL_COLOR_CONTROL_MOVE_MODE_UP
                             : dir < 0 ? EZB_ZCL_COLOR_CONTROL_MOVE_MODE_DOWN
                                       : EZB_ZCL_COLOR_CONTROL_MOVE_MODE_STOP;
     cmd.payload.rate = dir ? rate : 0;
+    cmd.payload.color_temperature_min_mireds = min_mired;
+    cmd.payload.color_temperature_max_mireds = max_mired;
     if (!esp_zigbee_lock_acquire(pdMS_TO_TICKS(1000))) {
         return ESP_ERR_TIMEOUT;
     }

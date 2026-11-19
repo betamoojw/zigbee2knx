@@ -245,7 +245,7 @@ def gateway():
     print("gateway parameter LongFrames")
     xml = load(os.path.join(ROOT, "producer", "zigbee-gateway.xml"))
     mn = gen.application_meaning(xml)
-    check("0xC000 version 3, replaces 1 and 2", (mn["number"], mn["version"], mn["replaces"]) == (0xC000, 3, [1, 2]),
+    check("0xC000 version 4, replaces 1, 2 and 3", (mn["number"], mn["version"], mn["replaces"]) == (0xC000, 4, [1, 2, 3]),
           (mn["number"], mn["version"], mn["replaces"]))
     check("P-5 LongFrames at octet 4", mn["parameters"].get("5") == ["LongFrames", 4, "LongFrames"], mn["parameters"])
     check("enumeration: 0 standard frames only, 1 long frames of 55 octets, 2 of 66",

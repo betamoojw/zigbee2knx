@@ -66,7 +66,13 @@ CT_PREVIOUS = 65535                      # color_temp_startup preset "previous" 
 MIRED_DEFAULT = (153, 500)               # class fallback when neither the lamp nor the table gives a range
 K_RANGE = (1000, 10000)                  # ETS range of the Kelvin parameters (the lamp limits at run time)
 # model table flags
-F_LEVEL_START, F_IDENTIFY, F_CT_START, F_FREEZE = 1, 2, 4, 8
+F_LEVEL_START, F_IDENTIFY, F_CT_START, F_FREEZE, F_LEVEL_FIRST = 1, 2, 4, 8, 16
+# What a device does that its Zigbee2MQTT definition does not say, by Zigbee2MQTT model, seen on test hardware.
+# F_LEVEL_FIRST: the lamp restarts when Move to Level with On/Off reaches it while it is off (LED2201G8, software
+# build 3.0.22, every time; On does not restart it). Such a lamp never gets Move to Level with On/Off: its level goes
+# without On/Off (datapoint brightness_no_onoff, which the gateway sends with ExecuteIfOff, so that a lamp that is off
+# takes it too; firmware 0.6.1 and later, older firmware drops it), and from off On follows.
+SEEN = {"LED2201G8": F_LEVEL_FIRST}
 # switch class: model table entry [flags, child lock write]; flags 1 power-on behaviour, 2 identify, 16 child lock
 S_POB, S_IDENTIFY, S_CHILD_LOCK = 1, 2, 16
 SWITCH_EXTRAS = {"power_on_behavior", "identify", "child_lock", "led_enable", "linkquality"}
@@ -95,16 +101,22 @@ IKEA_BATTERY_FIXED_DEFAULT = [2, 4, 0]
 # distill/knxprod_products.py): every lower version given out (producer/issued.json). available: the number of the
 # object "Available", fixed once given out. Light classes: version 1 carried the template in text parameters
 # (FE20/FE21), version 2 as segment data (C001/C002), version 3 adds the object "Available"; switch and remote:
-# version 2 adds it.
+# version 2 adds it. Dimmable version 4, white spectrum version 5: the memory function takes the last brightness
+# reported while on, a brightness reported before any state counts as on, the text of the transition parameter says
+# what it does, models in SEEN; white spectrum also relative colour temperature with step code 1 within MINCT..MAXCT
+# and texts of the colour temperature limits that say their defaults mean no limit. Switch version 4 and remote
+# version 3: the table sizes (tools/knxprod_gen.py MaxEntries); remote also toggle with inverted telegrams, level 255.
+# Dimmable version 5, white spectrum version 6: switched on by a value or by dimming up, the value status no longer
+# goes out first with the brightness from before (the lamp reports On before its new level); it waits for that report.
 CLASSES = {
     "dimmable": {"dir": "zigbee-dimmable-light", "app": 0xC001, "name": "Zigbee dimmable light",
-                 "order": "ZB-LIGHT-DIM", "version": 3, "available": 7, "section": "lights"},
+                 "order": "ZB-LIGHT-DIM", "version": 5, "available": 7, "section": "lights"},
     "switch": {"dir": "zigbee-switch", "app": 0xC003, "name": "Zigbee switch", "order": "ZB-SWITCH",
-               "version": 3, "available": 4, "section": "plugs"},
+               "version": 4, "available": 4, "section": "plugs"},
     "remote": {"dir": "zigbee-remote", "app": 0xC004, "name": "Zigbee remote", "order": "ZB-REMOTE",
-               "version": 2, "available": 6, "section": "remotes"},
+               "version": 3, "available": 6, "section": "remotes"},
     "white_spectrum": {"dir": "zigbee-white-spectrum-light", "app": 0xC002, "name": "Zigbee white spectrum light",
-                       "order": "ZB-LIGHT-WS", "version": 4, "available": 11, "section": "lights"},
+                       "order": "ZB-LIGHT-WS", "version": 6, "available": 11, "section": "lights"},
 }
 
 
@@ -258,6 +270,7 @@ def classify(r: dict) -> tuple[str, list]:
         flags |= F_IDENTIFY
     if "unfreeze_support" in [o.get("name") for o in r.get("options", [])]:
         flags |= F_FREEZE
+    flags |= SEEN.get(r.get("model"), 0)
     min_on = 2 if r.get("meta", {}).get("turnsOffAtBrightness1") else 1
     ct = by.get("color_temp")
     if not ct:
@@ -468,8 +481,9 @@ end
 # Group write from KNX: the state of what the button switches
 def knx_write(ko, raw)
     var Z = zb_remote
-    if ko == Z.KO_SWITCH_STATUS && raw.size() == 1
-        host.state_set('sw', (raw[0] & 1) != 0)
+    if ko == Z.KO_SWITCH_STATUS && raw.size() == 1      # the bus value; 'sw' keeps the value before inverting
+        var v = (raw[0] & 1) != 0
+        host.state_set('sw', Z.cfg()['inv'] ? !v : v)
     else
         host.log('ko_write_ignored', {'ko': ko, 'value': raw.tohex()})
     end
@@ -524,7 +538,8 @@ def dp_event(ch, key, value, initial)
         var up = size(p) > 0 && p[0] == 0
         if (c == 0x00 || c == 0x04) && size(p) > 0
             var b = bytes()
-            b.add((p[0] * 255 + 127) / 254, 1)
+            var v = (p[0] * 255 + 127) / 254    # level 0..254; 255 (not a level in ZCL) gives 255, not 0
+            b.add(v > 255 ? 255 : v, 1)
             host.ko_send(Z.KO_VALUE, b)
         elif c == 0x01 || c == 0x05
             Z.dim(up ? 0x09 : 0x01)
@@ -758,6 +773,7 @@ class zb_light
     static F_IDENTIFY = 2
     static F_CT_START = 4
     static F_FREEZE = 8
+    static F_LEVEL_FIRST = 16
     static MODELS = @MODELS@
 @CT_CONST@@POFF@
     static def defaults()
@@ -798,9 +814,15 @@ class zb_light
         var Z = zb_light                        # while it runs and until the lamp has reported after it, else the report
         var m = host.state_get('lv')
         if m != nil && host.now_ms() < m[2] + m[3] + Z.SETTLE_MS  return m[1] end
-        if host.dp_get(Z.EP, 'state') != 'ON'  return 0 end
-        var b = host.dp_get(Z.EP, 'brightness')
-        return b == nil ? 0 : b
+        var b = host.dp_get(Z.EP, 'brightness')       # no state reported yet: a reported brightness counts as on
+        if host.dp_get(Z.EP, 'state') == 'OFF' || b == nil  return 0 end
+        return b
+    end
+    static def pending(b)                       # a command of ours to another level than b runs or has just run and
+        var m = host.state_get('lv')            # no level has come from the lamp since: b is from before it (a lamp
+        var t = host.state_get('bt')            # reports On before its new level), its report follows. A level read
+        return m != nil && m[1] > 0 && m[1] != b && (t == nil || t <= m[2]) &&   # back after the command is new
+               host.now_ms() < m[2] + m[3] + zb_light.SETTLE_MS                  # even when it is not the target
     end
     static def moving(key, at, to, tenths)      # remember a command: from, target, start, duration in ms
         host.state_set(key, [at, to, host.now_ms(), tenths * 100])
@@ -813,14 +835,25 @@ class zb_light
             host.state_set(key, [at, at, now, 0])
         end
     end
+    static def bri_cmd(to, tenths, from_off, on)    # brightness in steps. A model with F_LEVEL_FIRST restarts on Move
+        var Z = zb_light                        # to Level with On/Off while off and never gets it: its level goes
+        if Z.has(Z.F_LEVEL_FIRST)               # without On/Off (the gateway adds ExecuteIfOff), then On when the
+            if !from_off && tenths > 0  host.dp_set(Z.EP, 'transition', real(tenths) / 10) end   # command switches
+            host.dp_set(Z.EP, 'brightness_no_onoff', to)   # on (not when dimming down), whatever the class thinks:
+            if on  host.dp_set(Z.EP, 'state', 'ON') end   # a lamp that is on ignores On, a running move goes on
+            return
+        end
+        if tenths > 0  host.dp_set(Z.EP, 'transition', real(tenths) / 10) end
+        host.dp_set(Z.EP, 'brightness', to)
+    end
     static def set_bri(c, bri)                  # within MIN_SV..MAX_SV, then on
         var Z = zb_light
         var lo = Z.pct_to_bri(c['min'])
         var hi = Z.pct_to_bri(c['max'])
         var to = Z.clamp(bri, lo, hi)
-        Z.moving('lv', Z.level(), to, c['trans'])
-        Z.transition(c)
-        host.dp_set(Z.EP, 'brightness', to)
+        var at = Z.level()
+        Z.moving('lv', at, to, at == 0 && Z.has(Z.F_LEVEL_FIRST) ? 0 : c['trans'])
+        Z.bri_cmd(to, c['trans'], at == 0, true)
     end
     static def off(c)
         var Z = zb_light
@@ -833,7 +866,7 @@ class zb_light
         var code = raw & 0x07
         if code == 0
             Z.stopped('lv')
-            host.dp_set(Z.EP, c['roe'] ? 'brightness_move_onoff' : 'brightness_move', 'stop')
+            host.dp_set(Z.EP, c['roe'] && !Z.has(Z.F_LEVEL_FIRST) ? 'brightness_move_onoff' : 'brightness_move', 'stop')
             return
         end
         var lo = Z.pct_to_bri(c['min'])
@@ -843,6 +876,12 @@ class zb_light
         var to = 0
         if (raw & 0x08) != 0
             if at == 0                          # off: on at MIN_SV, then up by the step
+                if Z.has(Z.F_LEVEL_FIRST)       # one command: on at MIN_SV plus the step
+                    to = Z.clamp(lo + d, lo, hi)
+                    Z.moving('lv', 0, to, 0)
+                    Z.bri_cmd(to, 0, true, true)
+                    return
+                end
                 host.dp_set(Z.EP, 'brightness', lo)
                 at = lo
             end
@@ -862,8 +901,7 @@ class zb_light
         end
         var t = ((to > at ? to - at : at - to) * 10 + c['rate'] / 2) / c['rate']
         Z.moving('lv', at, to, t)
-        if t > 0  host.dp_set(Z.EP, 'transition', real(t) / 10) end
-        host.dp_set(Z.EP, 'brightness', to)
+        Z.bri_cmd(to, t, false, (raw & 0x08) != 0)
     end
 @CT_HELPERS@end
 
@@ -874,7 +912,7 @@ def knx_write(ko, raw)
     if ko == Z.KO_SWITCH && raw.size() == 1
         if (raw[0] & 1) != 0
             var bri = Z.pct_to_bri(c['osv'])
-            var last = host.dp_get(Z.EP, 'brightness')
+            var last = host.state_get('on_bri')   # last actual value in the on state (07_20_02 p. 42)
             if c['mf'] && last != nil && last > 0  bri = last end
 @CT_ON@            Z.set_bri(c, bri)
         else
@@ -911,13 +949,19 @@ def dp_event(ch, key, value, initial)
         var b = host.dp_get(Z.EP, 'brightness')
         if !on
             host.ko_status(Z.KO_VALUE_STATUS, bytes('00'), initial)
-        elif b != nil
+        elif b != nil && !Z.pending(b)          # else the value status waits for the lamp's report of the new level
             host.ko_status(Z.KO_VALUE_STATUS, Z.bri_byte(b), initial)
+            if b > 0  host.state_set('on_bri', b) end
         end
     elif key == 'brightness'
-        if host.dp_get(Z.EP, 'state') != 'OFF'
+        host.state_set('bt', host.now_ms())     # when the lamp's level came last (pending)
+        var st = host.dp_get(Z.EP, 'state')
+        if st != 'OFF'
             host.ko_status(Z.KO_VALUE_STATUS, Z.bri_byte(value), initial)
         end
+        var m = host.state_get('lv')            # not on the way to off (relative off): its last level before off
+        var to_off = m != nil && m[1] == 0 && host.now_ms() < m[2] + m[3] + Z.SETTLE_MS
+        if st == 'ON' && value > 0 && !to_off  host.state_set('on_bri', value) end
 @CT_EVENT@    end
 end
 
@@ -1019,13 +1063,16 @@ CT_HELPERS = """    static def k_word(p, o)                     # 16-bit paramet
             return
         end
         var k = Z.ct_now()
-        if code == 1                            # until a stop or the lamp's limit
+        if code == 1                            # until a stop or MINCT..MAXCT (within the lamp's range): the
+            var lim = Z.ct_limits(c)            # bounds go with the command as mired, "rate,min,max"
+            var lo = Z.clamp((1000000 + lim[1] / 2) / lim[1], r[0], r[1])
+            var hi = Z.clamp((1000000 + lim[0] / 2) / lim[0], r[0], r[1])
             if k != nil
-                var a = Z.clamp((1000000 + k / 2) / k, r[0], r[1])
-                var b = up ? r[0] : r[1]
+                var a = Z.clamp((1000000 + k / 2) / k, lo, hi)
+                var b = up ? lo : hi
                 Z.moving('ctm', k, Z.mired_to_k(b), ((a > b ? a - b : b - a) * 10 + c['ctrate'] / 2) / c['ctrate'])
             end
-            host.dp_set(Z.EP, 'color_temp_move', up ? -c['ctrate'] : c['ctrate'])
+            host.dp_set(Z.EP, 'color_temp_move', str(up ? -c['ctrate'] : c['ctrate']) + ',' + str(lo) + ',' + str(hi))
             return
         end
         var lim = Z.ct_limits(c)
@@ -1231,7 +1278,7 @@ def build(cls: str, members: list) -> tuple[dict, str]:
     add("max", "MaximumValue", "Maximum brightness (%)", "Percent", 100, "gateway: FB DAB MAX_SV")
     add("roe", "RelativeOffEnable", "Relative dimming may switch off", "YesNo", 0,
         "gateway: FB DAB ROE (brightness_move_onoff instead of brightness_move)")
-    add("trans", "TransitionTime", "Transition for switching and values (0.1 s)", "Tenths", 0,
+    add("trans", "TransitionTime", "Transition for switching on and for values (0.1 s)", "Tenths", 0,
         "Zigbee2MQTT option transition (seconds), sent before each command")
     add("rate", "DimmingRate", "Relative dimming rate (brightness steps per second)", "Rate", 60,
         f"{ep}.brightness_move rate")
@@ -1253,7 +1300,7 @@ def build(cls: str, members: list) -> tuple[dict, str]:
          "zigbee": "identify on 0 and 1 alike (DPT 1.017 trigger), models with flag 2 (manufacturer-specific object, not in "
                    "FB DAB)"},
     ]
-    write = [f"{ep}.state", f"{ep}.brightness", f"{ep}.brightness_move", f"{ep}.brightness_move_onoff",
+    write = [f"{ep}.state", f"{ep}.brightness", f"{ep}.brightness_no_onoff", f"{ep}.brightness_move", f"{ep}.brightness_move_onoff",
              f"{ep}.transition", f"{ep}.power_on_behavior", f"{ep}.level_config.current_level_startup",
              f"{ep}.identify"]
     events = ["0.zigbeeModel", f"{ep}.state", f"{ep}.brightness"]
@@ -1265,9 +1312,9 @@ def build(cls: str, members: list) -> tuple[dict, str]:
         ptypes["CtSwitchOn"] = {"bits": 8, "enum": [[0, "last actual value"], [1, "value of the next parameter"],
                                                     [2, "last received absolute value"]]}
         ptypes["CtStartup"] = {"bits": 8, "enum": [[0, "previous"], [1, "fixed value"]]}
-        add("ctmin", "CtMinimum", "Minimum colour temperature (K)", "Kelvin", K_RANGE[0],
+        add("ctmin", "CtMinimum", f"Minimum colour temperature (K), {K_RANGE[0]} = no limit", "Kelvin", K_RANGE[0],
             "gateway: FB CTA MINCT; the lamp's own range applies on top")
-        add("ctmax", "CtMaximum", "Maximum colour temperature (K)", "Kelvin", K_RANGE[1],
+        add("ctmax", "CtMaximum", f"Maximum colour temperature (K), {K_RANGE[1]} = no limit", "Kelvin", K_RANGE[1],
             "gateway: FB CTA MAXCT; the lamp's own range applies on top")
         add("ctsob", "CtSwitchOnMode", "Colour temperature when switched on", "CtSwitchOn", 0,
             "gateway: FB CTA CTSOB, DPT 20.608 (0 last actual, 1 parameter, 2 last received absolute)")
@@ -1346,11 +1393,11 @@ def build(cls: str, members: list) -> tuple[dict, str]:
             "zigbee-herdsman cluster lightingColorCtrl: colorTempPhysicalMin 0x400B, colorTempPhysicalMax 0x400C",
         ],
         "open": ([
-            "MINCT/MAXCT do not limit relative colour temperature with step code 1: color_temp_move runs to the lamp's "
-            "own limits or a stop",
             "A stop of relative colour temperature (Move Color Temperature, stop) ends a Move to Color Temperature still "
             "running on IKEA white spectrum lamps (Zigbee2MQTT lib/ikea.ts relies on it); other lamps not checked",
         ] if ct else []) + [
+            "brightness_no_onoff (models with flag 16) needs gateway firmware 0.6.1 or later; older firmware drops it, "
+            "and such a lamp goes on at its last brightness",
             "Parameters live in host.state; after a VM restart the defaults apply until the next params call",
             "The radio adapter must deliver 0.zigbeeModel (and colorTempPhysicalMin/Max) as datapoints",
         ],

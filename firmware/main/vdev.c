@@ -66,9 +66,15 @@ static const char *TAG = "vdev";
 #define SAVE_HARD_US  180000000   // ... and never longer than this
 #define SAVE_RETRY_US 10000000    // after a write that failed; twice as long after each further one, up to 64 times
 #define APPLY_RETRY_US 30000000   // a template that could not be checked or loaded for want of memory, again after this
+#define APPLY_OOM_TRIES 3         // a load that ran out of memory itself: this many times, then a download or a start
 #define SEG_BUDGET    (96u * 1024u)   // RAM all segments together may take
 #define SEG_KEEP_US   60000000    // an unloaded object keeps its content this long for the allocation that follows
 #define LOST_MAX     3            // a status value the link gave up goes out again at most this often
+// After the start and after the restart of a device the bus does not know what its status objects hold: the first value
+// of each goes on the bus once (tell_held). The values of one device are collected for HELD_SETTLE_US (its first reads
+// answer within a second), then they go out together, one device every HELD_GAP_US, as zlink.c tells availability.
+#define HELD_SETTLE_US 2000000
+#define HELD_GAP_US    300000
 #define PARAMS_MAX   88           // parameter octets that fit into one request line to Berry
 #define NVS_PART     BOARD_DEVSRV_PART   // "devsrv" on the TUL32, "actor_db" on the TULX32 (board.h)
 #define REC_MAGIC    0x33564456u  // "VDV3": the template behind the parameters may be kept apart (s_ts)
@@ -126,16 +132,20 @@ typedef struct {
     uint16_t next_params;          // ... and the parameter octets it takes
     bool app_leaving;              // the application ETS had loaded was unloaded or is being replaced (app_gone())
     int64_t retry_at;              // apply() again then: its template could not be checked for want of memory
+    uint8_t oom_tries;             // loads that ran out of memory themselves since the last download or start
     uint16_t zaddr;                // Zigbee short address, ZADDR_NONE = none
     uint8_t zep;
     struct {
         uint8_t have : 1, unsent : 1;   // unsent: the link had no room for this value yet
         uint8_t status : 1;             // the class gave it as a status: the same value may go out twice
         uint8_t lost : 2;               // times the link gave this value up and it went out again (LOST_MAX)
+        uint8_t told : 1;               // a status the bus heard since the start or the device's restart
+        uint8_t due : 1;                // ... not yet: it goes out with the device's other held values (tell_held)
         uint8_t len, v[KNX_KO_VAL];
     } ko[KO_MAX + 1];
     uint8_t resp_ko;               // an answer to a read the link had no room for: its object, 0 none ...
     uint16_t resp_ga;              // ... and the group address the read came on
+    int64_t held_at;               // its held status values go on the bus then (tell_held), 0: none due
     uint32_t rx, tx, grp_rx, grp_tx, unhandled, mem_wr, mem_wr_octets, mem_rejected;
 } vdev_t;
 
@@ -190,6 +200,8 @@ static volatile uint8_t s_test_refuse;   // console tplfail: the next check at L
 // every start and every restart of the gateway's device (gw.c); the console `apdu` overrides it until then.
 static uint8_t s_max_apdu = MAX_APDU_DEF;
 static uint32_t s_ev_lost, s_kv_lost, s_saves, s_save_errs;   // frames / class values dropped: queue full
+static int64_t s_held_t;           // when the held status values of a device went out last (one device per HELD_GAP_US)
+static int s_held_rr;              // the device to look at first next time
 
 // class 0 zigbee-dimmable-light (application C001), class 1 zigbee-white-spectrum-light (C002): order info (PID 15),
 // octets of application parameters at the start of the parameter segment
@@ -1280,11 +1292,19 @@ static void apply(vdev_t *d)
         }
         if (k == BVM_REFUSED) {
             d->tpl = 2;
-            // No memory says nothing about the template: it is tried again, while a refused content waits for ETS
-            bool again = ti.err == KNX_ERR_NO_RAM;
+            // No memory says nothing about the template: it is tried again, while a refused content waits for ETS. A
+            // load that ran out of memory itself only APPLY_OOM_TRIES times: a template that runs the heap dry would do
+            // it every 30 s next to Zigbee and the bus (review G, round 2); a download or a start tries anew
+            bool again = ti.err == KNX_ERR_NO_RAM && (!ti.ran_out || ++d->oom_tries < APPLY_OOM_TRIES);
+            char after[96] = "";
+            if (again) {
+                snprintf(after, sizeof after, "; tried again in %d s", APPLY_RETRY_US / 1000000);
+            } else if (ti.ran_out) {
+                snprintf(after, sizeof after, "; not tried again until a download or a restart (the load ran out of memory "
+                         "%u times since)", (unsigned)d->oom_tries);
+            }
             ESP_LOGW(TAG, "dev %d: embedded template REFUSED: %s. Nothing loaded, parameters not applied, the device runs "
-                     "no class (checked in %u ms)%s", slot(d), why, (unsigned)(ti.us / 1000),
-                     again ? "; tried again in 30 s" : "");
+                     "no class (checked in %u ms)%s", slot(d), why, (unsigned)(ti.us / 1000), after);
             fault(d, ti.err, why);
             if (again) {
                 d->retry_at = esp_timer_get_time() + APPLY_RETRY_US;
@@ -1293,6 +1313,7 @@ static void apply(vdev_t *d)
         }
         if (k >= 2) {
             tpl_checked(d, ti.digest, (uint16_t)ti.params);
+            d->oom_tries = 0;
         }
     }
     bool tpl = k != BVM_NO_TEMPLATE;
@@ -1517,6 +1538,7 @@ static void load_event(vdev_t *d, int obj, const uint8_t *data, int n)
                 if (obj == 4) {
                     d->fault = 0;   // what this download brings is checked; apply() at the restart decides anew
                     d->retry_at = 0;
+                    d->oom_tries = 0;
                     d->app_leaving = false;
                     seg_share(d);
                     tpl_checked(d, d->next_tpl ? d->next_digest : NULL, d->next_params);
@@ -1733,6 +1755,8 @@ static int prop_write(vdev_t *d, int obj, int pid, const uint8_t *data, int n, u
 }
 
 // ---------------------------------------------------------------- application layer, individually addressed
+static void hold(vdev_t *d, int ko);
+
 static void restart(vdev_t *d)
 {
     const uint8_t *g, *a;
@@ -1742,9 +1766,19 @@ static void restart(vdev_t *d)
              slot(d), ng, na, (unsigned)(d->lo[4].state == LS_LOADED ? d->lo[4].size : 0),
              (unsigned long)d->mem_wr, (unsigned long)d->mem_wr_octets, (unsigned long)d->mem_rejected);
     d->mem_wr = d->mem_wr_octets = d->mem_rejected = 0;
+    d->oom_tries = 0;   // a restart tries a load that ran out of memory anew (APPLY_OOM_TRIES)
     set_prog(d, false);
     d->c.on = false;
     publish();
+    // What its status objects hold goes on the bus once more (tell_held): a download may have given them other group
+    // addresses, and a real device tells its state after a restart. A class that changes with this restart starts with
+    // nothing held (halt()); its first values are held when they come.
+    for (int ko = 1; ko <= KO_MAX && !is_gw(d); ko++) {
+        d->ko[ko].told = 0;
+        if (d->ko[ko].have && d->ko[ko].status) {
+            hold(d, ko);
+        }
+    }
     apply(d);
     app_gone(d);
 }
@@ -2294,6 +2328,16 @@ static bool ko_put(vdev_t *d, int ko)
     return true;
 }
 
+// A status object of a virtual device the bus has not heard since the start or the device's restart: its value goes
+// out with the device's other ones once they are in (tell_held)
+static void hold(vdev_t *d, int ko)
+{
+    d->ko[ko].due = 1;
+    if (!d->held_at) {
+        d->held_at = esp_timer_get_time() + HELD_SETTLE_US;
+    }
+}
+
 static void ko_out(int inst, int ko, const uint8_t *v, int n, bool initial, bool status)
 {
     vdev_t *d = by_inst(inst);
@@ -2308,10 +2352,43 @@ static void ko_out(int inst, int ko, const uint8_t *v, int n, bool initial, bool
     d->ko[ko].have = true;
     d->ko[ko].len = (uint8_t)n;
     memcpy(d->ko[ko].v, v, (size_t)n);
-    if (initial || (status && !changed && !d->ko[ko].unsent)) {
+    if (initial) {
+        // The value as linking found it is kept for a read. Its first one since the start or the device's restart goes
+        // on the bus as well, a little later (review A, N2); the gateway's own objects tell themselves (gw.c).
+        if (status && !d->ko[ko].told && !is_gw(d)) {
+            hold(d, ko);
+        }
         return;
     }
+    if (status && !changed && !d->ko[ko].unsent) {
+        return;   // a held value that is due stays due: the bus has not heard it
+    }
     d->ko[ko].unsent = !ko_put(d, ko);
+    if (status) {
+        d->ko[ko].told = 1;
+        d->ko[ko].due = 0;
+    }
+}
+
+// The status values a device holds that the bus has not heard since the start or the device's restart, together
+static void tell_held(vdev_t *d)
+{
+    int n = 0;
+    for (int ko = 1; ko <= KO_MAX; ko++) {
+        if (!d->ko[ko].due) {
+            continue;
+        }
+        d->ko[ko].due = 0;
+        d->ko[ko].told = 1;
+        if (d->ko[ko].have && d->ko[ko].status) {
+            d->ko[ko].unsent = !ko_put(d, ko);
+            n++;
+        }
+    }
+    d->held_at = 0;
+    if (n) {   // ko_put() sends nothing for an object without a group address or transmit flag
+        ESP_LOGI(TAG, "dev %d: %d status values it holds told, the first since the start or its restart", slot(d), n);
+    }
 }
 
 static void dispatch(const knx_frame_t *f)
@@ -2426,6 +2503,15 @@ static void timers(int64_t now)
             send_params(d);
         }
     }
+    // held status values, one device per HELD_GAP_US: 32 devices after a start take 10 s
+    for (int j = 0; j < VDEV_MAX && now - s_held_t >= HELD_GAP_US; j++) {
+        vdev_t *d = &s_d[(s_held_rr + j) % VDEV_MAX];
+        if (d->used && d->held_at && now >= d->held_at) {
+            tell_held(d);
+            s_held_t = now;
+            s_held_rr = (slot(d) + 1) % VDEV_MAX;
+        }
+    }
     // A flash write holds up the receive path, so it waits for a quiet moment of our own traffic. The wait has an
     // end: a busy line or a connection that stays open must not leave a download in RAM only.
     for (int i = 0; i < NDEV; i++) {
@@ -2500,6 +2586,7 @@ static void drain(void)
         if (!f && !v) {
             return;
         }
+        wdt_feed();   // one step: a busy line keeps this loop going, each frame and value ends by itself
         int64_t now = esp_timer_get_time();
         xSemaphoreTake(s_mx, portMAX_DELAY);
         if (f && e.type == EV_LOST) {
@@ -2534,7 +2621,9 @@ static void vdev_task(void *arg)
 {
     (void)arg;
     int64_t tick = 0;
+    wdt_watch();
     for (;;) {
+        wdt_feed();
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
         drain();
         int64_t now = esp_timer_get_time();

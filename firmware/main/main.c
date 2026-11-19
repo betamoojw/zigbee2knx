@@ -5,6 +5,7 @@
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_app_desc.h"
+#include "esp_task_wdt.h"
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -12,6 +13,7 @@
 #include "board.h"
 
 static const char *TAG = "main";
+static bool s_wdt;   // the task watchdog runs
 
 void app_heap(const char *phase)
 {
@@ -20,6 +22,40 @@ void app_heap(const char *phase)
              (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
              (unsigned long long)(esp_timer_get_time() / 1000000));
+}
+
+// The device server waits for Berry under its lock, and the binding, the link and the gateway's task wait for the
+// device server: a task that stopped would stop the gateway for good while the link layer goes on acknowledging its
+// frames. The idle task is not watched: Berry at full load starves it for seconds, and a busy gateway must not restart
+// for that, least of all a TULX32 that runs from the bus.
+void wdt_start(void)
+{
+    const esp_task_wdt_config_t c = {.timeout_ms = WDT_TIMEOUT_S * 1000, .idle_core_mask = 0, .trigger_panic = true};
+    esp_err_t e = esp_task_wdt_init(&c);
+    s_wdt = e == ESP_OK;
+    if (s_wdt) {
+        ESP_LOGI(TAG, "task watchdog: %d s, then a panic with coredump and a restart; the idle task is not watched",
+                 WDT_TIMEOUT_S);
+    } else {
+        ESP_LOGE(TAG, "task watchdog not started: %s", esp_err_to_name(e));
+    }
+}
+
+void wdt_watch(void)
+{
+    esp_err_t e = s_wdt ? esp_task_wdt_add(NULL) : ESP_ERR_INVALID_STATE;
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "task watchdog: task %s not watched (%s)", pcTaskGetName(NULL), esp_err_to_name(e));
+    }
+}
+
+// Called from shared code as well (bvm.c, after each request): only a watched task feeds. esp_task_wdt_status() looks
+// the task up without a log line, esp_task_wdt_reset() would log one for a task that is not watched.
+void wdt_feed(void)
+{
+    if (s_wdt && esp_task_wdt_status(NULL) == ESP_OK) {
+        esp_task_wdt_reset();
+    }
 }
 
 static void tick(void *arg)
@@ -32,6 +68,7 @@ void app_main(void)
 {
     const esp_app_desc_t *d = esp_app_get_description();
     ESP_LOGI(TAG, "zigbee2knx %s, IDF %s, %s", d->version, d->idf_ver, BOARD_NAME);
+    wdt_start();   // before the tasks: each watched one subscribes itself when it starts
     app_heap("boot");
     esp_err_t e = nvs_flash_init();
     if ((e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) && BOARD_NVS_ERASABLE) {

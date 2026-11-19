@@ -19,7 +19,7 @@ LOCK_ON = [("power_on_behavior", "on"), ("zcl.write", "fc85,0000,10,117c,1")]
 def main():
     check = Checks()
     m = T.manifest
-    rebuild_checks(check, T, app_version=3, replaces=[1, 2], available=4, section=("PlugsSwitches", "Plugs and switches"))
+    rebuild_checks(check, T, app_version=4, replaces=[1, 2, 3], available=4, section=("PlugsSwitches", "Plugs and switches"))
     check("TRETAKT is in the class table", TRETAKT in m["match"]["zigbeeModel"], m["match"]["zigbeeModel"])
     orders = [p["model"] for p in m["products"]]
     check("a product for the number on the box (E2204) and for the Zigbee2MQTT model (E22x4)",

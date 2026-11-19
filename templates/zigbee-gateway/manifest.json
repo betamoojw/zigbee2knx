@@ -1,7 +1,7 @@
 {
   "schema": "knxgw-template/0",
   "id": "zigbee.gateway",
-  "version": 3,
+  "version": 4,
   "title": "Zigbee gateway: the TUL32 itself as a KNX device",
   "radio": "none",
   "match": {},
@@ -18,10 +18,11 @@
   ],
   "open": [
     "Application number 0xC000 under M-00FA (KNX Association), as open-source KNX projects use it; chosen by this project, not registered.",
-    "Default range 1..48 is a test setting; the default for a product is not decided yet.",
+    "Default range 200..231: 32 places, as many as the gateway has, at the top of a line, where ordinary devices rarely sit; binding from ETS stays on.",
     "Zigbee channel is not a parameter yet (fixed in the firmware).",
     "Version 2: objects 5-12. ETS 6.4.1 does not show PID_ERROR_CODE (28), so the reason of a refused download is only visible here.",
-    "Version 3: parameter LongFrames (octet 4). Long frames through line couplers and USB interfaces are not tested."
+    "Version 3: parameter LongFrames (octet 4). Long frames through line couplers and USB interfaces are not tested.",
+    "Version 4: default range 200..231 (was 1..48), table sizes MaxEntries 255 (was 65535), bus current 47 mA (NCN5130 with FANIN 10 kOhm: 39.6 to 47.0 mA in operation, datasheet table 4; was 10 mA)."
   ],
   "knx": {
     "manufacturer": "M-00FA",
@@ -29,10 +30,11 @@
     "application": {
       "name": "Zigbee gateway",
       "number": 49152,
-      "version": 3,
+      "version": 4,
       "replaces": [
         1,
-        2
+        2,
+        3
       ],
       "mask": "MV-07B0",
       "order_info": "ZB-GATEWAY"
@@ -41,7 +43,8 @@
       "name": "Zigbee gateway (TUL32)",
       "serial_number": "49152",
       "version": 1,
-      "bus_current_ma": 10,
+      "bus_current_ma": 47,
+      "nonreg_version": 1,
       "order_number": "ZB-GATEWAY"
     },
     "catalog": {
@@ -247,7 +250,7 @@
           "name": "FirstDevice",
           "text": "Addresses for Zigbee devices in this line: first device number",
           "type": "DeviceNumber",
-          "default": 1,
+          "default": 200,
           "zigbee": "pair range, low end"
         },
         {
@@ -255,7 +258,7 @@
           "name": "LastDevice",
           "text": "Addresses for Zigbee devices in this line: last device number",
           "type": "DeviceNumber",
-          "default": 48,
+          "default": 231,
           "zigbee": "pair range, high end"
         },
         {

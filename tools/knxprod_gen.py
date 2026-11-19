@@ -441,8 +441,10 @@ def generate(m: dict, behaviour_src: str | None = None, access: str | None = Non
         n = o["number"]
         sub(orefs, "ComObjectRef", Id=f"%AID%_O-{n}_R-{n}", RefId=f"%AID%_O-{n}")
 
-    sub(static, "AddressTable", MaxEntries="65535")
-    sub(static, "AssociationTable", MaxEntries="65535")
+    # what the device server takes (firmware vdev.c): each table in a segment of 1 KiB, 2 octets of count, then 2 octets
+    # per group address or 4 per association; the link acknowledges 256 group addresses in all (app.h KNX_ACK_GA_MAX)
+    sub(static, "AddressTable", MaxEntries="255")
+    sub(static, "AssociationTable", MaxEntries="255")
     lps = sub(static, "LoadProcedures")
     lp = sub(lps, "LoadProcedure", MergeId="2")
     sub(lp, "LdCtrlRelSegment", LsmIdx="4", Size=seg_size, Mode="1", Fill="0", AppliesTo="full")
@@ -693,7 +695,11 @@ def main():
     if not args.template:
         ap.error("TEMPLATE_DIR is needed")
     try:
-        signer = None if args.unsigned else make_signer(args)
+        # a signer only for a manifest that embeds a template (the gateway's application embeds none)
+        mpath = args.manifest or os.path.join(args.template, "manifest.json")
+        with open(mpath, encoding="utf-8") as f:
+            embeds = bool(json.load(f)["knx"].get("embed"))
+        signer = None if args.unsigned or not embeds else make_signer(args)
         text, m, emb, d = build(args.template, args.manifest, signer=signer, access=args.embed_access,
                                 carrier=args.embed_carrier, app_number=args.app_number, app_name=args.app_name)
     except (GenError, KeyError, OSError, ValueError, kgt.KgtError) as e:

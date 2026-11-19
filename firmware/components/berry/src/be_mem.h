@@ -36,6 +36,7 @@ typedef enum {
     BE_OS_MEM_EXT_PEAK,         /* max of EXT_BYTES since boot/reset      */
     BE_OS_MEM_TOTAL_PEAK,       /* max of INT_BYTES + EXT_BYTES           */
     BE_OS_MEM_BLOCKS,           /* number of live heap blocks             */
+    BE_OS_MEM_LARGEST,          /* largest block handed out since reset   */
     BE_OS_MEM_FIELDS
 } be_os_mem_field;
 BERRY_API size_t be_os_mem_get(be_os_mem_field field);

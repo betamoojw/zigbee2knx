@@ -208,6 +208,10 @@ bool zlink_reinterview(int inst)
 static int g_note_kind, g_nnote;
 static uint16_t g_note_ia;
 void gw_note(int kind, uint16_t ia, uint8_t err, const char *why) { (void)err; (void)why; g_note_kind = kind; g_note_ia = ia; g_nnote++; }
+// task watchdog (main.c): the pair task subscribes when it starts and feeds with every round
+static unsigned long g_wdt_watch, g_wdt_feed;
+void wdt_watch(void) { g_wdt_watch++; }
+void wdt_feed(void) { g_wdt_feed++; }
 
 // ---- the checks
 static int g_pass, g_fail;
@@ -274,7 +278,40 @@ int main(int argc, char **argv)
 {
     g_verbose = argc > 1 && strcmp(argv[1], "-v") == 0;
     pair_start();
+    check("the default range is 15.15.200 .. 15.15.231", s_lo == 0xFFC8 && s_hi == 0xFFE7);
+    pair_range(0xFF01, 0xFF30);   // the range of these tests, as a download of the gateway sets it: 15.15.1 .. 15.15.48
     check("the settings are kept in the device server's partition of this board", strcmp(g_part, BOARD_DEVSRV_PART) == 0);
+
+    printf("the task watchdog\n");
+    unsigned long f0 = g_wdt_feed;
+    later(1000);
+    later(1000);
+    check("the pair task subscribes and feeds it with every round, also when no event comes", g_wdt_watch > 0 &&
+          g_wdt_feed >= f0 + 2);
+
+    printf("a gateway whose own application ETS has not loaded yet\n");
+    reset();
+    ask(0x1101, 0xFF05, -1);
+    asking(0x1101, 6000);
+    check("an address assignment in the range opens nothing", g_nopen == 0 && s_st == ST_IDLE);
+    pair_window(60);
+    run();
+    check("the pairing window opens all the same", s_st == ST_WINDOW && g_nopen == 1);
+    pair_zb_update(0x7d00, IEEE_A, 1);
+    pair_zb_authorized(0x7d00, true);
+    run();
+    int w = vdev_by_ieee(IEEE_A);
+    check("... and the device that joins through it waits without an address", w >= 0 && vdev_unbound(w) &&
+          s_st == ST_IDLE);
+    later(8000);
+    ask(0x1101, 0xFF06, -1);
+    asking(0x1101, 6000);
+    check("ETS asks for an address while it waits: nothing, the device is not offered", s_st == ST_IDLE && !g_d[w].prog &&
+          g_nopen == 1);
+    pair_gw_loaded();
+    later(8000);
+    ask(0x1101, 0xFF06, -1);
+    check("the gateway is loaded: the same question takes the device that waits", s_st == ST_CHECK && s_slot == w);
 
     printf("ETS unloads the address of a device that is on\n");
     reset();
@@ -800,11 +837,74 @@ int main(int argc, char **argv)
     static const uint8_t IEEE_C[8] = {1, 2, 3, 4, 5, 6, 7, 0xC};
     pair_zb_update(0x7b05, IEEE_C, 1);   // a new device joins with that short address (the network is closed)
     run();
+    int pa = pend_find(IEEE_A);
+    check("a device that joins with that address while nothing is open is asked to leave; the one asked before no "
+          "longer stands for the address", g_nleave == 5 && g_leave[4] == 0x7b05 && pend_find(IEEE_C) >= 0 && pa >= 0 &&
+          s_pend_sa[pa] == SA_NONE);
+    int64_t asked_a = s_pend_t[pa];
     later(11000);
     pair_zb_heard(0x7b05);
     run();
-    check("a device that joined anew with that address is not taken for it", g_nleave == 4);
+    check("a frame from that address asks the device that joined there once more, not the one asked before",
+          g_nleave == 6 && s_pend_t[pend_find(IEEE_A)] == asked_a);
     pair_zb_left(0x7b05, IEEE_A);
+    pair_zb_left(0x7b05, IEEE_C);
+    run();
+
+    printf("a device joins while nothing here holds the network open\n");
+    reset();
+    later(60000);
+    pair_zb_update(0x7e00, IEEE_A, 1);
+    pair_zb_announce(0x7e00, IEEE_A, 0x8e);
+    run();
+    check("a minute after the start, in idle: asked to leave, remembered, warned", g_nleave == 1 && g_leave[0] == 0x7e00 &&
+          pend_find(IEEE_A) >= 0 && strstr(g_lastw, "joined while nothing was open") != NULL);
+    check("... no virtual device for it, and the network is closed once more", vdev_by_ieee(IEEE_A) < 0 &&
+          g_open_s == 0 && s_st == ST_IDLE);
+    pair_zb_left(0x7e00, IEEE_A);
+    run();
+    reset();
+    ask(0x1101, 0xFF2C, -1);
+    fresh(0x7e10, IEEE_A);
+    run();
+    int v1 = vdev_by_ieee(IEEE_A);
+    check("a series binds a device", v1 >= 0);
+    if (v1 < 0) return 1;
+    g_d[v1].ia = 0xFF2C;
+    pair_knx_assigned(v1, 0xFF2C);
+    run();
+    check("... and its address is written", s_st == ST_DONE && g_nleave == 0);
+    later(20000);
+    g_open_s = 99;
+    pair_zb_update(0x7e11, IEEE_B, 1);
+    pair_zb_announce(0x7e11, IEEE_B, 0x8e);
+    run();
+    check("a second device joins 20 s later: asked to leave, the network closed once more", g_nleave == 1 &&
+          g_leave[0] == 0x7e11 && g_open_s == 0 && vdev_by_ieee(IEEE_B) < 0);
+    pair_zb_left(0x7e11, IEEE_B);
+    run();
+    reset();
+    later(60000);
+    pair_manual(60);
+    run();
+    pair_zb_update(0x7e20, IEEE_B, 1);
+    run();
+    check("the console's \"join\" holds the network open: whoever joins stays", g_nleave == 0 && pend_find(IEEE_B) < 0);
+    later(61000);
+    pair_zb_update(0x7e21, IEEE_A, 1);
+    run();
+    check("... and after its seconds the next one is asked to leave", g_nleave == 1 && g_leave[0] == 0x7e21);
+    pair_manual(60);
+    run();
+    later(16000);     // beyond the guard after the last closing
+    pair_manual(0);   // "join 0" closes it before its time
+    run();
+    pair_zb_update(0x7e22, IEEE_C, 1);
+    run();
+    check("\"join 0\" ends it before its time", g_nleave == 2 && g_leave[1] == 0x7e22 &&
+          strstr(g_lastw, "joined while nothing was open") != NULL);
+    pair_zb_left(0x7e21, IEEE_A);
+    pair_zb_left(0x7e22, IEEE_C);
     run();
 
     printf("one of our devices joins anew after a reset by hand\n");

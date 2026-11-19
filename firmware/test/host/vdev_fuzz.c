@@ -104,6 +104,10 @@ void gw_note_real(int kind, uint16_t ia, uint8_t err, const char *why);
 // ---- stubs
 static int64_t g_now = 10000000;
 int64_t esp_timer_get_time(void) { return g_now; }
+// task watchdog (main.c): counted; vdev_sem checks that the device server feeds it with every item it takes
+static unsigned long g_wdt_watch, g_wdt_feed;
+void wdt_watch(void) { g_wdt_watch++; }
+void wdt_feed(void) { g_wdt_feed++; }
 static unsigned long g_log[128];
 void stub_log(char lvl, const char *tag, const char *fmt, ...)
 {
@@ -463,6 +467,8 @@ int pair_range(uint16_t lo, uint16_t hi)
     return 0;
 }
 void pair_window(int seconds) { g_pair_window = seconds; }
+static int g_pair_loaded;
+void pair_gw_loaded(void) { g_pair_loaded++; }
 bool pair_is_open(void) { return g_pair_open; }
 static int g_zl_unavailable;
 int zlink_unavailable(void) { return g_zl_unavailable; }
@@ -485,7 +491,9 @@ void zb_print(void) {}
 esp_err_t zb_permit_join_as(uint8_t s, bool own) { (void)s; (void)own; return ESP_OK; }
 bool zb_factory_reset(void) { return false; }
 esp_err_t zb_onoff(uint16_t dst, uint8_t ep, int what) { (void)dst; (void)ep; (void)what; return ESP_OK; }
-esp_err_t zb_level(uint16_t dst, uint8_t ep, uint8_t level, uint16_t t) { (void)dst; (void)ep; (void)level; (void)t; return ESP_OK; }
+esp_err_t zb_level(uint16_t dst, uint8_t ep, uint8_t level, uint16_t t, bool w) { (void)dst; (void)ep; (void)level; (void)t; (void)w; return ESP_OK; }
+esp_err_t zb_level_move(uint16_t dst, uint8_t ep, bool up, uint8_t rate, bool w) { (void)dst; (void)ep; (void)up; (void)rate; (void)w; return ESP_OK; }
+esp_err_t zb_level_stop(uint16_t dst, uint8_t ep, bool w) { (void)dst; (void)ep; (void)w; return ESP_OK; }
 esp_err_t zb_read(uint16_t dst, uint8_t ep, uint16_t cl, const uint16_t *attrs, int n) { (void)dst; (void)ep; (void)cl; (void)attrs; (void)n; return ESP_OK; }
 esp_err_t zb_leave(uint16_t a, const uint8_t *ieee) { (void)a; (void)ieee; g_leave_n++; return ESP_OK; }
 int zlink_add(int inst, int k, uint16_t addr, uint8_t ep) { (void)inst; (void)k; (void)addr; (void)ep; return 0; }
@@ -495,6 +503,7 @@ bool zlink_reinterview(int inst) { (void)inst; g_reint_n++; return true; }
 void knx_link_print(void) {}
 void knx_link_ack_print(void) {}
 void pair_removed(const uint8_t ieee[8]) { (void)ieee; }
+void pair_manual(int seconds) { (void)seconds; }
 void pair_print(void) {}
 int devsrv_resize(int n) { return n; }
 void devsrv_print(void) {}
@@ -537,7 +546,7 @@ esp_err_t zlink_knx_write(int inst, int ko, const char *hex)
     class_values(inst, g_kw_values);
     return ESP_OK;
 }
-static int g_tpl_mode;   // 0 none, 1 slot 2, 2 refused, 3 no memory to check it
+static int g_tpl_mode;   // 0 none, 1 slot 2, 2 refused, 3 no memory to check it, 4 the load ran out of memory
 static char g_vm[BVM_SLOTS][17];   // the template VMs the harness pretends to run: their digest, by slot
 static unsigned long g_tpl_calls;  // full checks (kgt_open in bvm_template)
 int bvm_template(const uint8_t *seg, size_t n, kgt_info_t *info, char *why, size_t wn)
@@ -555,6 +564,11 @@ int bvm_template(const uint8_t *seg, size_t n, kgt_info_t *info, char *why, size
     }
     if (g_tpl_mode == 2) { info->err = KNX_ERR_CONFIG; snprintf(why, wn, "refused by the harness"); return BVM_REFUSED; }
     if (g_tpl_mode == 3) { info->err = KNX_ERR_NO_RAM; snprintf(why, wn, "no memory to check it (harness)"); return BVM_REFUSED; }
+    if (g_tpl_mode == 4) {
+        info->err = KNX_ERR_NO_RAM; info->ran_out = true;
+        snprintf(why, wn, "the heap ran out while the template loaded (harness)");
+        return BVM_REFUSED;
+    }
     return BVM_NO_TEMPLATE;
 }
 int bvm_slot_of(const char *digest)

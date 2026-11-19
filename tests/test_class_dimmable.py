@@ -33,7 +33,7 @@ def dim(vm, inst, raw):
 def main():
     check = Checks()
     m = T.manifest
-    rebuild_checks(check, T, app_version=3, replaces=[2], available=7, section=("Lights", "Lights"))
+    rebuild_checks(check, T, app_version=5, replaces=[2, 3, 4], available=7, section=("Lights", "Lights"))
     check("LED1934G3 is in the class table", LED1934G3 in m["match"]["zigbeeModel"], m["match"]["zigbeeModel"][:5])
     vm = Vm(T)
     vm.call("dp_event", ch=0, key="zigbeeModel", value=LED1934G3, initial=True)
@@ -136,6 +136,60 @@ def main():
     got = dim(vm, 41, "0c")
     check("once the step has run and the lamp has reported, the next one counts from the report (140 -> 172)",
           got == [("transition", 0.5), ("brightness", 172)], got)
+
+    # switched on by a value or by dimming up: the lamp reports On before its new level, so the value status waits for
+    # that report instead of going out first with the brightness from before (bus test 18.11.: 0x43, then 0xbf)
+    lamp(vm, 50, brightness=67, state="OFF")
+    vm.call("knx_write", inst=50, ko=3, raw="bf")                    # 75 % = 190
+    ops = vm.call("dp_event", inst=50, ch=1, key="state", value="ON", initial=False)
+    check("off at 67, KO3 75 %: the lamp's On -> KO4 1 only, no KO5 with the old 67",
+          status(ops) == [(4, "01", False)], status(ops))
+    ops = vm.call("dp_event", inst=50, ch=1, key="brightness", value=190, initial=False)
+    check("then its brightness 190 -> KO5 0xbf", status(ops) == [(5, "bf", False)], status(ops))
+    vm.call("knx_write", inst=50, ko=1, raw="00")
+    vm.call("dp_event", inst=50, ch=1, key="state", value="OFF", initial=False)
+    got = sets(vm.call("knx_write", inst=50, ko=1, raw="01"))
+    check("memory function after it: on with 190, not the old 67", got == [("brightness", 190)], got)
+    lamp(vm, 51, brightness=51, state="OFF")
+    got = dim(vm, 51, "0b")
+    ops = vm.call("dp_event", inst=51, ch=1, key="state", value="ON", initial=False)
+    check("off at 51, KO2 up 25 % (on at 3, then 67): the lamp's On -> KO4 1 only, no KO5 with the old 51",
+          got == [("brightness", 3), ("transition", 1.1), ("brightness", 67)] and status(ops) == [(4, "01", False)],
+          (got, status(ops)))
+    lamp(vm, 52, brightness=127, state="OFF")
+    vm.call("knx_write", inst=52, ko=3, raw="80")                    # 50 % = 127, the level the lamp has kept
+    ops = vm.call("dp_event", inst=52, ch=1, key="state", value="ON", initial=False)
+    check("off at 127, KO3 50 % (127): the lamp's On -> KO4 1 and KO5 0x80 at once (no new level to wait for)",
+          status(ops) == [(4, "01", False), (5, "80", False)], status(ops))
+    lamp(vm, 53, brightness=90, state="OFF")
+    ops = vm.call("dp_event", inst=53, ch=1, key="state", value="ON", initial=False)
+    check("switched on without a command of ours (90): KO4 1 and KO5 0x5a at once",
+          status(ops) == [(4, "01", False), (5, "5a", False)], status(ops))
+    lamp(vm, 54, brightness=67, state="OFF")
+    vm.call("knx_write", inst=54, ko=3, raw="bf")
+    time.sleep(1.2)                                    # the command (no transition) and the 1 s after it are over
+    ops = vm.call("dp_event", inst=54, ch=1, key="state", value="ON", initial=False)
+    check("the wait ends with the 1 s after the command: a later On without a level report -> KO5 from what is known",
+          status(ops) == [(4, "01", False), (5, "43", False)], status(ops))
+    # review F, F1: the lamp's On report is lost, the gateway reads back the level, then On/Off (zlink.c readback); the
+    # level read after the command is new even when it is not the target, so the On that follows reports it
+    lamp(vm, 55, brightness=67, state="OFF")
+    vm.call("knx_write", inst=55, ko=3, raw="bf")                    # 75 % = 190
+    time.sleep(0.05)
+    ops = vm.call("dp_event", inst=55, ch=1, key="brightness", value=180, initial=False)
+    check("F1 C: no On report, level read back 180 while the shadow says off -> no KO5 yet", status(ops) == [], status(ops))
+    ops = vm.call("dp_event", inst=55, ch=1, key="state", value="ON", initial=False)
+    check("F1 C: then On read back -> KO4 1 and KO5 0xb5 (180), not nothing",
+          status(ops) == [(4, "01", False), (5, "b5", False)], status(ops))
+    lamp(vm, 56, brightness=51, state="OFF")
+    dim(vm, 56, "09")                                  # up by the whole range: on at 3, then to 254 in 4.2 s
+    time.sleep(0.3)
+    dim(vm, 56, "08")                                  # stop: the estimated position (about 20) becomes the target
+    time.sleep(0.05)
+    vm.call("dp_event", inst=56, ch=1, key="brightness", value=35, initial=False)
+    ops = vm.call("dp_event", inst=56, ch=1, key="state", value="ON", initial=False)
+    check("F1 A: up from off, stop, no On report; level 35 and On read back -> KO4 1 and KO5 0x23",
+          status(ops) == [(4, "01", False), (5, "23", False)], status(ops))
     vm.close()
     return check.finish()
 

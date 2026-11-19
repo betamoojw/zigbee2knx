@@ -17,6 +17,10 @@
 //   - Zigbee shares nvs with the recovery system. Nothing in this firmware may erase nvs there: neither on an NVS
 //     error at the start nor through "zbreset" (esp_zigbee_factory_reset() "clears all the datasets", its header does
 //     not say whether that is more than its own keys).
+// Zigbee TX power: the TULX32 runs from the KNX bus. At the stack's default of 20 dBm its NCN5130 reset while the
+// radio sent under load (2026-11-18, one TULX32: 30 attribute reads and 6 switch commands in 2 min gave 12 resets at
+// 20 dBm and none at 18 dBm; a device joining at 20 dBm once ended in a brownout of the ESP32-C6). BOARD_ZB_TX_DBM caps
+// it (zb.c); the TUL32, powered from USB, keeps the default. The margin between 18 and 20 dBm has not been measured.
 #pragma once
 #include "sdkconfig.h"
 
@@ -31,6 +35,7 @@
 #define BOARD_DEVSRV_PART     "actor_db"
 #define BOARD_ZB_PART         "nvs"
 #define BOARD_NVS_ERASABLE    0               // nvs holds the recovery system's settings: never erase it
+#define BOARD_ZB_TX_DBM       18              // Zigbee TX power cap (see above); the console's "zb tx" may override it
 #else
 #define BOARD_NAME            "TUL32"
 #define BOARD_BTN_PIN         9               // S1 (BOOT), active low

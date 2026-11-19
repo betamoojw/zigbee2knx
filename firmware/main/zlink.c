@@ -43,6 +43,7 @@ typedef struct {
     esp_timer_handle_t su;   // binding and reporting set up a little after linking
     uint8_t su_try;
     uint32_t zcl_out, dp_in, knx_out;
+    uint32_t refused, given_up;   // commands the stack did not take at once (dp_set), and not the second time either
     uint32_t reads;          // attribute reads sent (each answer counts once in dp_in)
     int64_t last_in_us;      // time of the last answer
     volatile uint32_t heard_n, fail_n;   // written by the Zigbee task: frames heard, sends that failed (avail.h)
@@ -249,82 +250,97 @@ static int pick(const char *v, const char *const *names, const int *vals, int n,
     return dflt;
 }
 
-// one Zigbee2MQTT property set by the class -> one ZCL command
-static void dp_set(zlink_t *l, const char *key, const char *val)
+static void nudge(const zlink_t *l);
+
+// A command the Zigbee stack did not take, or a unicast it gave up (zlink_sent): counts against the availability of the
+// device (avail.h). Two without a frame from the device in between make it "not reachable": the gateway's message OFF
+// and its fault. Called by the Zigbee task and the Berry task: the counter is incremented atomically.
+static void count_fail(zlink_t *l)
 {
-    char what[72];
-    esp_err_t e;
-    bool rb = true;
-    if (strcmp(key, "transition") == 0) {   // seconds, applies to the next command
-        float s = strtof(val, NULL);
-        l->trans = s <= 0 ? 0 : s >= 6553 ? 65530 : (uint16_t)(s * 10 + 0.5f);
-        return;
+    __atomic_fetch_add(&l->fail_n, 1, __ATOMIC_RELAXED);
+    if (!l->av.sleepy && l->av.state != AV_OFF && !l->nudged) {
+        l->nudged = true;
+        nudge(l);
     }
-    uint16_t t = l->trans;
-    l->trans = 0;
+}
+
+// The ZCL command for one Zigbee2MQTT property the class sets, sent. false: no mapping, nothing went out. *e: what the
+// stack said; what: the command, for the log; *rb: read the state back after it.
+static bool zcl_cmd(zlink_t *l, const char *key, const char *val, uint16_t t, esp_err_t *e, char *what, size_t wn,
+                    bool *rb)
+{
+    *rb = true;
     if (strcmp(key, "state") == 0) {
         static const char *const n[] = {"OFF", "ON", "TOGGLE"};
         static const int v[] = {0, 1, 2};
         int w = pick(val, n, v, 3, -1);
         if (w < 0) {
-            goto unmapped;
+            return false;
         }
-        e = zb_onoff(l->addr, l->ep, w);
-        snprintf(what, sizeof what, "On/Off %s", n[w]);
-    } else if (strcmp(key, "brightness") == 0) {
+        *e = zb_onoff(l->addr, l->ep, w);
+        snprintf(what, wn, "On/Off %s", n[w]);
+    } else if (strcmp(key, "brightness") == 0 || strcmp(key, "brightness_no_onoff") == 0) {
+        // brightness: Move to Level with On/Off. brightness_no_onoff: without, and executed while off (ExecuteIfOff): the
+        // level for a lamp that restarts on Move to Level with On/Off while it is off, before the class switches it on
+        bool onoff = key[10] == 0;
         int b = atoi(val);
         b = b < 0 ? 0 : b > 254 ? 254 : b;
-        e = zb_level(l->addr, l->ep, (uint8_t)b, t);
-        snprintf(what, sizeof what, "Move to Level with On/Off %d in %u/10 s", b, t);
+        *e = zb_level(l->addr, l->ep, (uint8_t)b, t, onoff);
+        snprintf(what, wn, "Move to Level%s %d in %u/10 s", onoff ? " with On/Off" : "", b, t);
     } else if (strcmp(key, "brightness_move") == 0 || strcmp(key, "brightness_move_onoff") == 0) {
         bool onoff = key[15] != 0;
         if (strcmp(val, "stop") == 0) {
-            e = zb_level_stop(l->addr, l->ep, onoff);
-            snprintf(what, sizeof what, "Stop%s", onoff ? " with On/Off" : "");
+            *e = zb_level_stop(l->addr, l->ep, onoff);
+            snprintf(what, wn, "Stop%s", onoff ? " with On/Off" : "");
         } else {
             int r = atoi(val);
             int rate = abs(r);
             rate = rate < 1 ? 1 : rate > 254 ? 254 : rate;
-            e = zb_level_move(l->addr, l->ep, r >= 0, (uint8_t)rate, onoff);
-            snprintf(what, sizeof what, "Move%s %s, %d/s", onoff ? " with On/Off" : "", r >= 0 ? "up" : "down", rate);
-            rb = false;   // read back after the stop
+            *e = zb_level_move(l->addr, l->ep, r >= 0, (uint8_t)rate, onoff);
+            snprintf(what, wn, "Move%s %s, %d/s", onoff ? " with On/Off" : "", r >= 0 ? "up" : "down", rate);
+            *rb = false;   // read back after the stop
         }
     } else if (strcmp(key, "color_xy") == 0) {   // "X,Y" raw 0..65279 (CIE x, y times 65535), C005 datapoints
         unsigned x, y;
         if (sscanf(val, "%u,%u", &x, &y) != 2) {
-            goto unmapped;
+            return false;
         }
         x = x > 0xFEFF ? 0xFEFF : x;
         y = y > 0xFEFF ? 0xFEFF : y;
         l->xy = true;
-        e = zb_color_xy(l->addr, l->ep, (uint16_t)x, (uint16_t)y, t);
-        snprintf(what, sizeof what, "Move to Color x %u y %u in %u/10 s", x, y, t);
+        *e = zb_color_xy(l->addr, l->ep, (uint16_t)x, (uint16_t)y, t);
+        snprintf(what, wn, "Move to Color x %u y %u in %u/10 s", x, y, t);
     } else if (strcmp(key, "color_temp") == 0) {   // mired
         int m = atoi(val);
         m = m < 1 ? 1 : m > 0xFEFF ? 0xFEFF : m;
         l->ct = true;
-        e = zb_color_temp(l->addr, l->ep, (uint16_t)m, t);
-        snprintf(what, sizeof what, "Move to Color Temperature %d mired in %u/10 s", m, t);
-    } else if (strcmp(key, "color_temp_move") == 0) {   // mired per second, > 0 warmer, < 0 cooler, or "stop"
+        *e = zb_color_temp(l->addr, l->ep, (uint16_t)m, t);
+        snprintf(what, wn, "Move to Color Temperature %d mired in %u/10 s", m, t);
+    } else if (strcmp(key, "color_temp_move") == 0) {
+        // "RATE[,MIN,MAX]": mired per second, > 0 warmer, < 0 cooler; the move stays within MIN..MAX mired (none or 0:
+        // the lamp's own limits). Or "stop".
         l->ct = true;
         if (strcmp(val, "stop") == 0) {
-            e = zb_color_temp_move(l->addr, l->ep, 0, 0);
-            snprintf(what, sizeof what, "Stop Move Color Temperature");
+            *e = zb_color_temp_move(l->addr, l->ep, 0, 0, 0, 0);
+            snprintf(what, wn, "Stop Move Color Temperature");
         } else {
-            int r = atoi(val);
+            int r = 0, lo = 0, hi = 0;
+            sscanf(val, "%d,%d,%d", &r, &lo, &hi);
             int rate = abs(r);
             rate = rate < 1 ? 1 : rate > 0xFFFF ? 0xFFFF : rate;
-            e = zb_color_temp_move(l->addr, l->ep, r >= 0 ? 1 : -1, (uint16_t)rate);
-            snprintf(what, sizeof what, "Move Color Temperature %s, %d mired/s", r >= 0 ? "up (warmer)" : "down (cooler)",
-                     rate);
-            rb = false;   // read back after the stop
+            lo = lo < 0 ? 0 : lo > 0xFEFF ? 0xFEFF : lo;
+            hi = hi < 0 ? 0 : hi > 0xFEFF ? 0xFEFF : hi;
+            *e = zb_color_temp_move(l->addr, l->ep, r >= 0 ? 1 : -1, (uint16_t)rate, (uint16_t)lo, (uint16_t)hi);
+            snprintf(what, wn, "Move Color Temperature %s, %d mired/s, %d..%d", r >= 0 ? "up (warmer)" : "down (cooler)", rate,
+                     lo, hi);
+            *rb = false;   // read back after the stop
         }
     } else if (strcmp(key, "color_temp_startup") == 0) {   // Color Control StartUpColorTemperatureMireds (uint16)
         int m = atoi(val);   // 65535: the previous value
         m = m < 1 ? 1 : m > 0xFFFF ? 0xFFFF : m;
-        e = zb_write_u16(l->addr, l->ep, 0x0300, 0x4010, 0x21, (uint16_t)m);
-        snprintf(what, sizeof what, "write Color StartUpColorTemperatureMireds = %d", m);
-        rb = false;
+        *e = zb_write_u16(l->addr, l->ep, 0x0300, 0x4010, 0x21, (uint16_t)m);
+        snprintf(what, wn, "write Color StartUpColorTemperatureMireds = %d", m);
+        *rb = false;
     } else if (strcmp(key, "zcl.write") == 0) {
         // The template says what to write: "cluster,attribute,type,manufacturer,value" in hex, manufacturer 0 for a
         // standard attribute. The knowledge about the device stays in the template, not here.
@@ -340,27 +356,27 @@ static void dp_set(zlink_t *l, const char *key, const char *val)
             }
         }
         if (!size || cl > 0xFFFF || at > 0xFFFF || mf > 0xFFFF) {
-            goto unmapped;
+            return false;
         }
-        e = zb_write_attr(l->addr, l->ep, (uint16_t)cl, (uint16_t)at, (uint8_t)ty, (uint32_t)v, (uint8_t)size,
-                          (uint16_t)mf);
-        snprintf(what, sizeof what, "write 0x%04x/0x%04x type 0x%02x = 0x%lx%s", cl, at, ty, v,
+        *e = zb_write_attr(l->addr, l->ep, (uint16_t)cl, (uint16_t)at, (uint8_t)ty, (uint32_t)v, (uint8_t)size,
+                           (uint16_t)mf);
+        snprintf(what, wn, "write 0x%04x/0x%04x type 0x%02x = 0x%lx%s", cl, at, ty, v,
                  mf ? " (manufacturer-specific)" : "");
-        rb = false;
+        *rb = false;
     } else if (strcmp(key, "identify") == 0) {
-        e = zb_identify(l->addr, l->ep, 3);
-        snprintf(what, sizeof what, "Identify 3 s");
-        rb = false;
+        *e = zb_identify(l->addr, l->ep, 3);
+        snprintf(what, wn, "Identify 3 s");
+        *rb = false;
     } else if (strcmp(key, "power_on_behavior") == 0) {   // On/Off StartUpOnOff (enum8)
         static const char *const n[] = {"off", "on", "toggle", "previous"};
         static const int v[] = {0x00, 0x01, 0x02, 0xff};
         int w = pick(val, n, v, 4, -1);
         if (w < 0) {
-            goto unmapped;
+            return false;
         }
-        e = zb_write_u8(l->addr, l->ep, 0x0006, 0x4003, 0x30, (uint8_t)w);
-        snprintf(what, sizeof what, "write On/Off StartUpOnOff = 0x%02x", w);
-        rb = false;
+        *e = zb_write_u8(l->addr, l->ep, 0x0006, 0x4003, 0x30, (uint8_t)w);
+        snprintf(what, wn, "write On/Off StartUpOnOff = 0x%02x", w);
+        *rb = false;
     } else if (strcmp(key, "level_config.current_level_startup") == 0) {   // Level StartUpCurrentLevel (uint8)
         static const char *const n[] = {"minimum", "previous"};
         static const int v[] = {0x00, 0xff};
@@ -369,20 +385,65 @@ static void dp_set(zlink_t *l, const char *key, const char *val)
             w = atoi(val);
             w = w < 1 ? 1 : w > 254 ? 254 : w;
         }
-        e = zb_write_u8(l->addr, l->ep, 0x0008, 0x4000, 0x20, (uint8_t)w);
-        snprintf(what, sizeof what, "write Level StartUpCurrentLevel = 0x%02x", w);
-        rb = false;
+        *e = zb_write_u8(l->addr, l->ep, 0x0008, 0x4000, 0x20, (uint8_t)w);
+        snprintf(what, wn, "write Level StartUpCurrentLevel = 0x%02x", w);
+        *rb = false;
     } else {
-        goto unmapped;
+        return false;
+    }
+    return true;
+}
+
+// One Zigbee2MQTT property set by the class -> one ZCL command, in the Berry task while the hook runs.
+// A command the stack does not take (its lock busy for 1 s, no buffer, any other error of the library) goes out once
+// more after RETRY_MS; refused again, it counts as a failed send (count_fail), so that a lamp left on after a central
+// command shows up as a fault instead of nowhere (review 2026-11-17, A M4). The retry waits here, in the hook: the
+// commands of a device keep their order, and a burst that ran the stack out of buffers pauses for it. While the stack
+// is not up nothing goes out at all; that is no failure of the device and is not counted.
+#define RETRY_MS 200
+
+static void dp_set(zlink_t *l, const char *key, const char *val)
+{
+    char what[72];
+    esp_err_t e = ESP_OK;
+    bool rb = true;
+    if (strcmp(key, "transition") == 0) {   // seconds, applies to the next command
+        float s = strtof(val, NULL);
+        l->trans = s <= 0 ? 0 : s >= 6553 ? 65530 : (uint16_t)(s * 10 + 0.5f);
+        return;
+    }
+    uint16_t t = l->trans;
+    l->trans = 0;
+    if (!zcl_cmd(l, key, val, t, &e, what, sizeof what, &rb)) {
+        ESP_LOGI(TAG, "inst %d: %s = %s has no ZCL mapping", l->inst, key, val);
+        return;
     }
     l->zcl_out++;
-    ESP_LOGI(TAG, "inst %d -> 0x%04x: %s = %s => %s: %s", l->inst, l->addr, key, val, what, esp_err_to_name(e));
-    if (e == ESP_OK && rb) {
+    if (e != ESP_OK && !zb_up()) {
+        ESP_LOGW(TAG, "inst %d -> 0x%04x: %s = %s => %s: not sent, Zigbee is not up (%s)", l->inst, l->addr, key, val,
+                 what, esp_err_to_name(e));
+        return;
+    }
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "inst %d -> 0x%04x: %s = %s => %s: the Zigbee stack did not take it (%s), once more in %d ms",
+                 l->inst, l->addr, key, val, what, esp_err_to_name(e), RETRY_MS);
+        vTaskDelay(pdMS_TO_TICKS(RETRY_MS));
+        l->refused++;
+        zcl_cmd(l, key, val, t, &e, what, sizeof what, &rb);
+        if (e != ESP_OK) {
+            ESP_LOGW(TAG, "inst %d -> 0x%04x: %s = %s => %s: not taken the second time either (%s), counted as a "
+                     "failed send", l->inst, l->addr, key, val, what, esp_err_to_name(e));
+            l->given_up++;
+            count_fail(l);
+            return;
+        }
+        ESP_LOGW(TAG, "inst %d -> 0x%04x: %s = %s => %s: taken the second time", l->inst, l->addr, key, val, what);
+    } else {
+        ESP_LOGI(TAG, "inst %d -> 0x%04x: %s = %s => %s: %s", l->inst, l->addr, key, val, what, esp_err_to_name(e));
+    }
+    if (rb) {
         readback(l, t);
     }
-    return;
-unmapped:
-    ESP_LOGI(TAG, "inst %d: %s = %s has no ZCL mapping", l->inst, key, val);
 }
 
 void zlink_out(const char *js)
@@ -601,6 +662,7 @@ static void avail_run(int only)
     }
     for (int j = 0; j < n; j++) {
         const av_act_t *a = &act[j];
+        wdt_feed();   // a step per device: 32 lamps of one circuit come back in one round
         if (a->ping) {
             esp_err_t e = zb_read(a->addr, a->ep, 0x0000, zv, 1);
             s_l[a->idx].reads += e == ESP_OK;
@@ -743,11 +805,7 @@ void zlink_sent(uint16_t addr, uint8_t status)
 {
     zlink_t *l = status ? by_addr(addr) : NULL;
     if (l && !l->gone) {
-        l->fail_n++;
-        if (!l->av.sleepy && l->av.state != AV_OFF && !l->nudged) {
-            l->nudged = true;
-            nudge(l);
-        }
+        count_fail(l);
     }
 }
 
@@ -1030,8 +1088,12 @@ static void link_task(void *arg)
     (void)arg;
     static const uint16_t a0[] = {0x0000};
     lev_t ev;
+    wdt_watch();
     for (;;) {
-        xQueueReceive(s_q, &ev, portMAX_DELAY);
+        wdt_feed();   // every event is a step; while none comes, the wait has an end so that the task goes on feeding
+        if (xQueueReceive(s_q, &ev, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            continue;
+        }
         if (ev.type == EV_TELL) {
             tell_next();
             continue;
@@ -1211,6 +1273,7 @@ static int add(int inst, int k, uint16_t addr, uint8_t ep)
     l->ep = ep;
     l->trans = 0;
     l->zcl_out = l->dp_in = l->knx_out = 0;
+    l->refused = l->given_up = 0;
     l->reads = 3;
     l->last_in_us = 0;
     l->heard_n = l->fail_n = 0;
@@ -1412,11 +1475,11 @@ void zlink_print(void)
         zlink_t *l = &s_l[i];
         if (l->used) {
             static const char *const AV[] = {"unknown", "on", "OFF"};
-            printf("link: inst %d (class %d) <-> 0x%04x ep %u; zcl out %lu, reads %lu, answers %lu, last answer %lld s "
-                   "ago, knx out %lu\n",
-                   l->inst, l->k, l->addr, l->ep, (unsigned long)l->zcl_out, (unsigned long)l->reads,
-                   (unsigned long)l->dp_in, l->last_in_us ? (long long)((now - l->last_in_us) / 1000000) : -1LL,
-                   (unsigned long)l->knx_out);
+            printf("link: inst %d (class %d) <-> 0x%04x ep %u; zcl out %lu (%lu not taken at once, %lu not at all), "
+                   "reads %lu, answers %lu, last answer %lld s ago, knx out %lu\n",
+                   l->inst, l->k, l->addr, l->ep, (unsigned long)l->zcl_out, (unsigned long)l->refused,
+                   (unsigned long)l->given_up, (unsigned long)l->reads, (unsigned long)l->dp_in,
+                   l->last_in_us ? (long long)((now - l->last_in_us) / 1000000) : -1LL, (unsigned long)l->knx_out);
             printf("      availability %s (%s), frames heard %lu, failed sends %lu (%lu since the last frame), quiet for "
                    "%lld s; went off %lu times, came back %lu times\n",
                    AV[l->av.state % 3], l->av.sleepy ? "sleepy end device" : "receiver on", (unsigned long)l->heard_n,

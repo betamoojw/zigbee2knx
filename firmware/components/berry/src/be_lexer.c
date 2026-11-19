@@ -868,7 +868,12 @@ void be_lexer_init(blexer *lexer, bvm *vm,
 
 void be_lexer_deinit(blexer *lexer)
 {
+    if (!lexer->buf.s) {
+        return; /* done already: be_lexerror() and then be_parser_source() after the failure */
+    }
     be_free(lexer->vm, lexer->buf.s, lexer->buf.size);
+    lexer->buf.s = NULL;
+    lexer->buf.size = 0;
     keyword_unregiste(lexer->vm);
 }
 

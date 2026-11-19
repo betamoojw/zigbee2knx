@@ -15,7 +15,8 @@ static F_LEVEL_START = 1
 static F_IDENTIFY = 2
 static F_CT_START = 4
 static F_FREEZE = 8
-static MODELS = {'NYMANE PENDANT': [1, 250, 454, 15], 'KAJPLATS E27 WS globe 470lm': [2, 153, 454, 7], 'KAJPLATS E27 WS globe 1055lm': [2, 153, 454, 7], 'KAJPLATS GU10 WS 575lm': [2, 153, 454, 7], 'KAJPLATS E27 WS globe 1521lm': [2, 153, 454, 7], 'KAJPLATS E14 WS globe 806lm': [2, 153, 454, 7], 'KAJPLATS E26 WS globe 450lm': [2, 153, 454, 7], 'KAJPLATS E26 WS globe 1100lm': [2, 153, 454, 7], 'KAJPLATS E26 WS globe 1600lm': [2, 153, 454, 7], 'KAJPLATS E12 WS globe 800lm': [2, 153, 454, 7], 'KAJPLATS E14 WS B38 CL 470lm': [2, 153, 454, 7], 'KAJPLATS E27 WS G95 clear 806lm': [2, 153, 454, 7], 'KAJPLATS E27 806lm 95mm smart WS': [2, 153, 454, 7], 'KAJPLATS E27 WS G60 clear 470lm': [2, 153, 454, 7], 'KAJPLATS E27 470lm smart WS': [2, 153, 454, 7], 'KAJPLATS E12 WS B38 CL 450lm': [2, 153, 454, 7], 'FLOALT panel WS 30x30': [2, 250, 454, 15], 'FLOALT panel WS 30x90': [2, 250, 454, 15], 'FLOALT panel WS 60x60': [2, 250, 454, 15], 'JORMLIEN door WS 40x80': [1, 250, 454, 15], 'SURTE door WS 38x64': [1, 250, 454, 15], 'JETSTROM 6060': [1, 250, 454, 15], 'JETSTROM 6060 JP': [1, 250, 454, 15], 'JETSTROM 6060 NA': [1, 250, 454, 15], 'JETSTROM 40100': [1, 250, 454, 15], 'JETSTROM 40100 NA': [1, 250, 454, 15], 'TRADFRI bulb E14 WS opal 400lm': [1, 250, 454, 15], 'TRADFRI bulb E12 WS opal 400lm': [1, 250, 454, 15], 'TRADFRI bulb GU10 WS 400lm': [1, 250, 454, 15], 'TRADFRI bulb E27 WS opal 980lm': [1, 250, 454, 15], 'TRADFRI bulb E26 WS opal 980lm': [1, 250, 454, 15], 'TRADFRI bulb E27 WS�opal 980lm': [1, 250, 454, 15], 'TRADFRI bulb E27 WS clear 950lm': [1, 250, 454, 15], 'TRADFRI bulb E26 WS clear 950lm': [1, 250, 454, 15], 'TRADFRI bulb E27 WS�clear 950lm': [1, 250, 454, 15], 'TRADFRI bulb E27 WS opal 1000lm': [1, 250, 454, 15], 'TRADFRI bulb E26 WS opal 1000lm': [1, 250, 454, 15], 'TRADFRI bulb E14 WS opal 600lm': [1, 250, 454, 15], 'TRADFRI bulb E27 WS clear 806lm': [1, 250, 454, 15], 'TRADFRI bulb E26 WS clear 806lm': [1, 250, 454, 15], 'TRADFRI bulb E12 WS opal 600lm': [1, 250, 454, 15], 'TRADFRI bulb E17 WS opal 600lm': [1, 250, 454, 15], 'TRADFRI bulb E14 WS 470lm': [1, 250, 454, 15], 'TRADFRI bulb E12 WS 450lm': [1, 250, 454, 15], 'TRADFRI bulb E17 WS 440lm': [1, 250, 454, 15], 'TRADFRI bulb E17 WS candle 440lm': [1, 250, 454, 15], 'TRADFRIbulbG125E27WSopal470lm': [1, 250, 454, 15], 'TRADFRIbulbG125E26WSopal450lm': [1, 250, 454, 15], 'TRADFRIbulbG125E26WSopal470lm': [1, 250, 454, 15], 'TRADFRIbulbG125E26WSopal440lm': [1, 250, 454, 15], 'TRADFRI bulb E27 opal 470lm': [1, 250, 454, 15], 'TRADFRI bulb E27 W opal 470lm': [1, 250, 454, 15], 'TRADFRIbulbT120E27WSopal470lm': [1, 250, 454, 15], 'TRADFRIbulbT120E26WSopal450lm': [1, 250, 454, 15], 'TRADFRIbulbT120E26WSopal470lm': [1, 250, 454, 15], 'TRADFRI bulb E26 WS opal 440lm': [1, 250, 454, 15], 'TRADFRIbulbT120E26WSopal440lm': [1, 250, 454, 15], 'TRADFRIbulbE14WScandleopal470lm': [1, 250, 454, 15], 'TRADFRIbulbE12WScandleopal450lm': [1, 250, 454, 15], 'TRADFRIbulbE17WScandleopal440lm': [1, 250, 454, 15], 'TRADFRIbulbE14WSglobeopal470lm': [1, 250, 454, 15], 'TRADFRIbulbE12WSglobeopal470lm': [1, 250, 454, 15], 'TRADFRI bulb E17 WS globe 440lm': [1, 250, 454, 15], 'TRADFRIbulbE17WSglobeopal470lm': [1, 250, 454, 15], 'TRADFRIbulbE27WSglobeopal1055lm': [1, 250, 454, 15], 'TRADFRIbulbE26WSglobeopal1100lm': [1, 250, 454, 15], 'TRADFRIbulbE26WSglobeopal1160lm': [1, 250, 454, 15], 'TRADFRIbulbE26WSglobeopal1055lm': [1, 250, 454, 15], 'TRADFRIbulbE26WSglobeclear800lm': [1, 250, 454, 15], 'TRADFRIbulbE27WSglobeclear806lm': [1, 250, 454, 15], 'TRADFRIbulbE26WSglobeclear806lm': [1, 250, 454, 15], 'TRADFRIbulbE26WSglobeclear810lm': [1, 250, 454, 15], 'TRADFRI_bulb_GU10_WS_345lm': [1, 250, 454, 15], 'TRADFRIbulbGU10WS345lm': [1, 250, 454, 15], 'TRADFRI bulb GU10 WS 345lm': [1, 250, 454, 15], 'TRADFRIbulbGU10WS380lm': [1, 250, 454, 15], 'TRADFRI bulb GU10 WS 380lm': [1, 250, 454, 15], 'TRADFRIbulbPAR38WS900lm': [1, 250, 454, 15], 'TRADFRIbulbB22WSglobeopal1055lm': [1, 250, 454, 15], 'TRADFRI bulb E14 WS globe 470lm': [1, 250, 454, 15], 'TRADFRI bulb E12 WS globe 450lm': [1, 250, 454, 15], 'TRADFRI bulb E14 WS candle 470lm': [1, 250, 454, 15], 'TRADFRI bulb E12 WS candle 450lm': [1, 250, 454, 15], 'TRADFRI bulb E27 WS globe 1055lm': [1, 250, 454, 15], 'TRADFRI bulb E26 WS globe 1055lm': [1, 250, 454, 15], 'TRADFRI bulb E26 WS globe 1100lm': [1, 250, 454, 15], 'TRADFRI bulb E26 WS globe 1160lm': [1, 250, 454, 15], 'LEPTITER Recessed spot light': [1, 250, 454, 15], 'GUNNARP panel round': [1, 250, 454, 15], 'GUNNARP panel 40*40': [1, 250, 454, 15], 'TRADFRI Light Engine': [1, 250, 454, 15]}
+static F_LEVEL_FIRST = 16
+static MODELS = {'NYMANE PENDANT': [1, 250, 454, 15], 'KAJPLATS E27 WS globe 470lm': [2, 153, 454, 7], 'KAJPLATS E27 WS globe 1055lm': [2, 153, 454, 7], 'KAJPLATS GU10 WS 575lm': [2, 153, 454, 7], 'KAJPLATS E27 WS globe 1521lm': [2, 153, 454, 7], 'KAJPLATS E14 WS globe 806lm': [2, 153, 454, 7], 'KAJPLATS E26 WS globe 450lm': [2, 153, 454, 7], 'KAJPLATS E26 WS globe 1100lm': [2, 153, 454, 7], 'KAJPLATS E26 WS globe 1600lm': [2, 153, 454, 7], 'KAJPLATS E12 WS globe 800lm': [2, 153, 454, 7], 'KAJPLATS E14 WS B38 CL 470lm': [2, 153, 454, 7], 'KAJPLATS E27 WS G95 clear 806lm': [2, 153, 454, 7], 'KAJPLATS E27 806lm 95mm smart WS': [2, 153, 454, 7], 'KAJPLATS E27 WS G60 clear 470lm': [2, 153, 454, 7], 'KAJPLATS E27 470lm smart WS': [2, 153, 454, 7], 'KAJPLATS E12 WS B38 CL 450lm': [2, 153, 454, 7], 'FLOALT panel WS 30x30': [2, 250, 454, 15], 'FLOALT panel WS 30x90': [2, 250, 454, 15], 'FLOALT panel WS 60x60': [2, 250, 454, 15], 'JORMLIEN door WS 40x80': [1, 250, 454, 15], 'SURTE door WS 38x64': [1, 250, 454, 15], 'JETSTROM 6060': [1, 250, 454, 15], 'JETSTROM 6060 JP': [1, 250, 454, 15], 'JETSTROM 6060 NA': [1, 250, 454, 15], 'JETSTROM 40100': [1, 250, 454, 15], 'JETSTROM 40100 NA': [1, 250, 454, 15], 'TRADFRI bulb E14 WS opal 400lm': [1, 250, 454, 15], 'TRADFRI bulb E12 WS opal 400lm': [1, 250, 454, 15], 'TRADFRI bulb GU10 WS 400lm': [1, 250, 454, 15], 'TRADFRI bulb E27 WS opal 980lm': [1, 250, 454, 15], 'TRADFRI bulb E26 WS opal 980lm': [1, 250, 454, 15], 'TRADFRI bulb E27 WS�opal 980lm': [1, 250, 454, 15], 'TRADFRI bulb E27 WS clear 950lm': [1, 250, 454, 15], 'TRADFRI bulb E26 WS clear 950lm': [1, 250, 454, 15], 'TRADFRI bulb E27 WS�clear 950lm': [1, 250, 454, 15], 'TRADFRI bulb E27 WS opal 1000lm': [1, 250, 454, 15], 'TRADFRI bulb E26 WS opal 1000lm': [1, 250, 454, 15], 'TRADFRI bulb E14 WS opal 600lm': [1, 250, 454, 15], 'TRADFRI bulb E27 WS clear 806lm': [1, 250, 454, 15], 'TRADFRI bulb E26 WS clear 806lm': [1, 250, 454, 15], 'TRADFRI bulb E12 WS opal 600lm': [1, 250, 454, 15], 'TRADFRI bulb E17 WS opal 600lm': [1, 250, 454, 15], 'TRADFRI bulb E14 WS 470lm': [1, 250, 454, 15], 'TRADFRI bulb E12 WS 450lm': [1, 250, 454, 15], 'TRADFRI bulb E17 WS 440lm': [1, 250, 454, 15], 'TRADFRI bulb E17 WS candle 440lm': [1, 250, 454, 15], 'TRADFRIbulbG125E27WSopal470lm': [1, 250, 454, 15], 'TRADFRIbulbG125E26WSopal450lm': [1, 250, 454, 15], 'TRADFRIbulbG125E26WSopal470lm': [1, 250, 454, 15], 'TRADFRIbulbG125E26WSopal440lm': [1, 250, 454, 15], 'TRADFRI bulb E27 opal 470lm': [1, 250, 454, 15], 'TRADFRI bulb E27 W opal 470lm': [1, 250, 454, 15], 'TRADFRIbulbT120E27WSopal470lm': [1, 250, 454, 15], 'TRADFRIbulbT120E26WSopal450lm': [1, 250, 454, 15], 'TRADFRIbulbT120E26WSopal470lm': [1, 250, 454, 15], 'TRADFRI bulb E26 WS opal 440lm': [1, 250, 454, 15], 'TRADFRIbulbT120E26WSopal440lm': [1, 250, 454, 15], 'TRADFRIbulbE14WScandleopal470lm': [1, 250, 454, 15], 'TRADFRIbulbE12WScandleopal450lm': [1, 250, 454, 15], 'TRADFRIbulbE17WScandleopal440lm': [1, 250, 454, 15], 'TRADFRIbulbE14WSglobeopal470lm': [1, 250, 454, 15], 'TRADFRIbulbE12WSglobeopal470lm': [1, 250, 454, 15], 'TRADFRI bulb E17 WS globe 440lm': [1, 250, 454, 15], 'TRADFRIbulbE17WSglobeopal470lm': [1, 250, 454, 15], 'TRADFRIbulbE27WSglobeopal1055lm': [1, 250, 454, 15], 'TRADFRIbulbE26WSglobeopal1100lm': [1, 250, 454, 15], 'TRADFRIbulbE26WSglobeopal1160lm': [1, 250, 454, 15], 'TRADFRIbulbE26WSglobeopal1055lm': [1, 250, 454, 15], 'TRADFRIbulbE26WSglobeclear800lm': [1, 250, 454, 15], 'TRADFRIbulbE27WSglobeclear806lm': [1, 250, 454, 15], 'TRADFRIbulbE26WSglobeclear806lm': [1, 250, 454, 15], 'TRADFRIbulbE26WSglobeclear810lm': [1, 250, 454, 15], 'TRADFRI_bulb_GU10_WS_345lm': [1, 250, 454, 15], 'TRADFRIbulbGU10WS345lm': [1, 250, 454, 15], 'TRADFRI bulb GU10 WS 345lm': [1, 250, 454, 15], 'TRADFRIbulbGU10WS380lm': [1, 250, 454, 15], 'TRADFRI bulb GU10 WS 380lm': [1, 250, 454, 15], 'TRADFRIbulbPAR38WS900lm': [1, 250, 454, 15], 'TRADFRIbulbB22WSglobeopal1055lm': [1, 250, 454, 15], 'TRADFRI bulb E14 WS globe 470lm': [1, 250, 454, 15], 'TRADFRI bulb E12 WS globe 450lm': [1, 250, 454, 15], 'TRADFRI bulb E14 WS candle 470lm': [1, 250, 454, 15], 'TRADFRI bulb E12 WS candle 450lm': [1, 250, 454, 15], 'TRADFRI bulb E27 WS globe 1055lm': [1, 250, 454, 31], 'TRADFRI bulb E26 WS globe 1055lm': [1, 250, 454, 31], 'TRADFRI bulb E26 WS globe 1100lm': [1, 250, 454, 31], 'TRADFRI bulb E26 WS globe 1160lm': [1, 250, 454, 31], 'LEPTITER Recessed spot light': [1, 250, 454, 15], 'GUNNARP panel round': [1, 250, 454, 15], 'GUNNARP panel 40*40': [1, 250, 454, 15], 'TRADFRI Light Engine': [1, 250, 454, 15]}
 static KO_CT = 7
 static KO_CT_REL = 8
 static KO_CT_STATUS = 9
@@ -79,9 +80,15 @@ static def level()
 var Z = zb_light
 var m = host.state_get('lv')
 if m != nil && host.now_ms() < m[2] + m[3] + Z.SETTLE_MS return m[1] end
-if host.dp_get(Z.EP, 'state') != 'ON' return 0 end
 var b = host.dp_get(Z.EP, 'brightness')
-return b == nil ? 0 : b
+if host.dp_get(Z.EP, 'state') == 'OFF' || b == nil return 0 end
+return b
+end
+static def pending(b)
+var m = host.state_get('lv')
+var t = host.state_get('bt')
+return m != nil && m[1] > 0 && m[1] != b && (t == nil || t <= m[2]) &&
+host.now_ms() < m[2] + m[3] + zb_light.SETTLE_MS
 end
 static def moving(key, at, to, tenths)
 host.state_set(key, [at, to, host.now_ms(), tenths * 100])
@@ -94,14 +101,25 @@ var at = m[0] + (m[1] - m[0]) * (now - m[2]) / m[3]
 host.state_set(key, [at, at, now, 0])
 end
 end
+static def bri_cmd(to, tenths, from_off, on)
+var Z = zb_light
+if Z.has(Z.F_LEVEL_FIRST)
+if !from_off && tenths > 0 host.dp_set(Z.EP, 'transition', real(tenths) / 10) end
+host.dp_set(Z.EP, 'brightness_no_onoff', to)
+if on host.dp_set(Z.EP, 'state', 'ON') end
+return
+end
+if tenths > 0 host.dp_set(Z.EP, 'transition', real(tenths) / 10) end
+host.dp_set(Z.EP, 'brightness', to)
+end
 static def set_bri(c, bri)
 var Z = zb_light
 var lo = Z.pct_to_bri(c['min'])
 var hi = Z.pct_to_bri(c['max'])
 var to = Z.clamp(bri, lo, hi)
-Z.moving('lv', Z.level(), to, c['trans'])
-Z.transition(c)
-host.dp_set(Z.EP, 'brightness', to)
+var at = Z.level()
+Z.moving('lv', at, to, at == 0 && Z.has(Z.F_LEVEL_FIRST) ? 0 : c['trans'])
+Z.bri_cmd(to, c['trans'], at == 0, true)
 end
 static def off(c)
 var Z = zb_light
@@ -114,7 +132,7 @@ var Z = zb_light
 var code = raw & 0x07
 if code == 0
 Z.stopped('lv')
-host.dp_set(Z.EP, c['roe'] ? 'brightness_move_onoff' : 'brightness_move', 'stop')
+host.dp_set(Z.EP, c['roe'] && !Z.has(Z.F_LEVEL_FIRST) ? 'brightness_move_onoff' : 'brightness_move', 'stop')
 return
 end
 var lo = Z.pct_to_bri(c['min'])
@@ -124,6 +142,12 @@ var at = Z.level()
 var to = 0
 if (raw & 0x08) != 0
 if at == 0
+if Z.has(Z.F_LEVEL_FIRST)
+to = Z.clamp(lo + d, lo, hi)
+Z.moving('lv', 0, to, 0)
+Z.bri_cmd(to, 0, true, true)
+return
+end
 host.dp_set(Z.EP, 'brightness', lo)
 at = lo
 end
@@ -143,8 +167,7 @@ return
 end
 var t = ((to > at ? to - at : at - to) * 10 + c['rate'] / 2) / c['rate']
 Z.moving('lv', at, to, t)
-if t > 0 host.dp_set(Z.EP, 'transition', real(t) / 10) end
-host.dp_set(Z.EP, 'brightness', to)
+Z.bri_cmd(to, t, false, (raw & 0x08) != 0)
 end
 static def k_word(p, o)
 return (p[o] << 8) | p[o + 1]
@@ -205,12 +228,15 @@ return
 end
 var k = Z.ct_now()
 if code == 1
+var lim = Z.ct_limits(c)
+var lo = Z.clamp((1000000 + lim[1] / 2) / lim[1], r[0], r[1])
+var hi = Z.clamp((1000000 + lim[0] / 2) / lim[0], r[0], r[1])
 if k != nil
-var a = Z.clamp((1000000 + k / 2) / k, r[0], r[1])
-var b = up ? r[0] : r[1]
+var a = Z.clamp((1000000 + k / 2) / k, lo, hi)
+var b = up ? lo : hi
 Z.moving('ctm', k, Z.mired_to_k(b), ((a > b ? a - b : b - a) * 10 + c['ctrate'] / 2) / c['ctrate'])
 end
-host.dp_set(Z.EP, 'color_temp_move', up ? -c['ctrate'] : c['ctrate'])
+host.dp_set(Z.EP, 'color_temp_move', str(up ? -c['ctrate'] : c['ctrate']) + ',' + str(lo) + ',' + str(hi))
 return
 end
 var lim = Z.ct_limits(c)
@@ -235,7 +261,7 @@ var c = Z.cfg()
 if ko == Z.KO_SWITCH && raw.size() == 1
 if (raw[0] & 1) != 0
 var bri = Z.pct_to_bri(c['osv'])
-var last = host.dp_get(Z.EP, 'brightness')
+var last = host.state_get('on_bri')
 if c['mf'] && last != nil && last > 0 bri = last end
 if c['ctsob'] == 1
 Z.set_ct(c, c['ctsosv'])
@@ -283,13 +309,19 @@ host.ko_status(Z.KO_SWITCH_STATUS, on ? bytes('01') : bytes('00'), initial)
 var b = host.dp_get(Z.EP, 'brightness')
 if !on
 host.ko_status(Z.KO_VALUE_STATUS, bytes('00'), initial)
-elif b != nil
+elif b != nil && !Z.pending(b)
 host.ko_status(Z.KO_VALUE_STATUS, Z.bri_byte(b), initial)
+if b > 0 host.state_set('on_bri', b) end
 end
 elif key == 'brightness'
-if host.dp_get(Z.EP, 'state') != 'OFF'
+host.state_set('bt', host.now_ms())
+var st = host.dp_get(Z.EP, 'state')
+if st != 'OFF'
 host.ko_status(Z.KO_VALUE_STATUS, Z.bri_byte(value), initial)
 end
+var m = host.state_get('lv')
+var to_off = m != nil && m[1] == 0 && host.now_ms() < m[2] + m[3] + Z.SETTLE_MS
+if st == 'ON' && value > 0 && !to_off host.state_set('on_bri', value) end
 elif key == 'color_temp'
 if value != nil && value > 0
 host.ko_status(Z.KO_CT_STATUS, Z.k_bytes(Z.mired_to_k(value)), initial)

@@ -1,7 +1,7 @@
 {
   "schema": "knxgw-template/0",
   "id": "zigbee.class.remote",
-  "version": 2,
+  "version": 3,
   "title": "Zigbee remote as a KNX push button",
   "radio": "zigbee",
   "match": {
@@ -147,9 +147,10 @@
     "application": {
       "name": "Zigbee remote",
       "number": 49156,
-      "version": 2,
+      "version": 3,
       "replaces": [
-        1
+        1,
+        2
       ],
       "mask": "MV-07B0",
       "order_info": "ZB-REMOTE"

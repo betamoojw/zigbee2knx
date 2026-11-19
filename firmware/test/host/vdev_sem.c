@@ -696,6 +696,37 @@ int main(void)
         g_tpl_mode = 1;
         tick_for(31000000);
         ck(!s_d[a].fault && s_d[a].k == 2, "memory there again: the next attempt brings the device up");
+        // a load that runs out of memory itself (review G, round 2): three attempts, then a download or a start
+        unsigned long t0 = g_tpl_calls;
+        g_tpl_mode = 4;
+        load4(a, s1, n1);
+        restart_of(0xFF01);
+        ck(s_d[a].fault == KNX_ERR_NO_RAM && s_d[a].k == -1 && g_tpl_calls == t0 + 1,
+           "the load runs out of memory: no class, Error 7");
+        tick_for(31000000);
+        tick_for(31000000);
+        ck(g_tpl_calls == t0 + 3, "tried twice more, 30 s apart");
+        tick_for(31000000);
+        tick_for(31000000);
+        tick_for(31000000);
+        ck(g_tpl_calls == t0 + 3 && s_d[a].fault == KNX_ERR_NO_RAM, "after three attempts: not tried again, Error 7 stays");
+        restart_of(0xFF01);
+        ck(g_tpl_calls == t0 + 4, "a restart tries anew");
+        g_tpl_mode = 3;   // the check finds no memory: tried again without a limit, as before
+        restart_of(0xFF01);
+        unsigned long t1 = g_tpl_calls;
+        for (int i = 0; i < 5; i++) {
+            tick_for(31000000);
+        }
+        ck(g_tpl_calls == t1 + 5, "no memory for the check: tried again every 30 s, no limit");
+        g_tpl_mode = 4;
+        tick_for(31000000);
+        tick_for(31000000);
+        tick_for(31000000);
+        g_tpl_mode = 1;
+        load4(a, s1, n1);
+        restart_of(0xFF01);
+        ck(!s_d[a].fault && s_d[a].k == 2, "a download after the attempts ran out: loads (memory there again)");
         g_tpl_mode = 0;
     }
     // a device without a running class answers no read with what the class said before, nor does an object under
@@ -1061,6 +1092,70 @@ int main(void)
         vdev_ko_out(100 + a, 4, &one, 1, false, true); pump();
         ck(g_last_tx_n == 0, "the same status again: not sent twice");
     }
+    // ... and the first value of a status object after a start goes on the bus as well, a little later and once; so does
+    // what a device holds after its restart (the end of its download, which may have given the object another group
+    // address); one device after the other (review A, N2)
+    fresh();
+    {
+        int a = vdev_add(0x1234, 1, 0, NULL), b = vdev_add(0x2345, 1, 0, NULL);
+        vdev_set_ia(a, 0xFF01);
+        vdev_set_ia(b, 0xFF02);
+        load_light(a);
+        load_light(b);
+        reboot_clean();
+        uint8_t one = 1, zero = 0;
+        g_last_tx_n = 0;
+        vdev_ko_out(100 + a, 4, &one, 1, true, true);
+        vdev_ko_out(100 + b, 4, &zero, 1, true, true);
+        pump();
+        ck(g_last_tx_n == 0, "after a start, the first values (initial): not at once");
+        int64_t t0 = g_now, ta = 0, tb = 0;
+        int na = 0, nb = 0, bad = 0;
+        for (int i = 0; i < 60; i++) {   // 6 s
+            g_last_tx_n = 0;
+            tick_for(100000);
+            for (int k = 0; k < g_last_tx_n; k++) {
+                bool fa = g_last_tx[k].src == 0xFF01 && sent(k, 0xF604, "0081"), fb = g_last_tx[k].src == 0xFF02 &&
+                                                                                    sent(k, 0xF604, "0080");
+                na += fa;
+                nb += fb;
+                ta = fa ? g_now : ta;
+                tb = fb ? g_now : tb;
+                bad += !fa && !fb;
+            }
+        }
+        ck(na == 1 && nb == 1 && !bad, "... each device's status on the bus once, with the value it holds");
+        ck(ta - t0 >= HELD_SETTLE_US && tb - t0 >= HELD_SETTLE_US && (ta > tb ? ta - tb : tb - ta) >= HELD_GAP_US,
+           "... after HELD_SETTLE_US, one device after the other");
+        g_last_tx_n = 0;
+        vdev_ko_out(100 + a, 4, &one, 1, true, true);
+        pump();
+        tick_for(3000000);
+        ck(g_last_tx_n == 0, "another initial value of the same object: not told again");
+        restart_of(0xFF01);   // the end of a download
+        na = bad = 0;
+        for (int i = 0; i < 40; i++) {
+            g_last_tx_n = 0;
+            tick_for(100000);
+            for (int k = 0; k < g_last_tx_n; k++) {
+                bool fa = g_last_tx[k].src == 0xFF01 && sent(k, 0xF604, "0081");
+                na += fa;
+                bad += !fa && g_last_tx[k].group;
+            }
+        }
+        ck(na == 1 && !bad, "after the device's restart: what its status object holds goes on the bus once");
+        reboot_clean();
+        g_last_tx_n = 0;
+        vdev_ko_out(100 + a, 4, &one, 1, true, true);    // held ...
+        vdev_ko_out(100 + a, 4, &zero, 1, false, true);  // ... and a change before its turn
+        pump();
+        ck(g_last_tx_n == 1 && sent(0, 0xF604, "0080"), "a change before its turn goes out at once");
+        g_last_tx_n = 0;
+        tick_for(3000000);
+        ck(g_last_tx_n == 0, "... and the held value does not follow it");
+        restart_of(0xFF30);   // the gateway's own device: gw.c tells its objects itself
+        ck(!s_d[GW].held_at, "the gateway's own device holds nothing back for this");
+    }
     // a template that does not come up at the start: the device runs nothing, as at run time (it ran the built-in class
     // of its application number before); a device set up by hand and never loaded still runs the class it was given
     fresh();
@@ -1406,6 +1501,29 @@ int main(void)
         ck(s_d[GW].lo[4].state == LS_LOADED && vdev_faulty() == f0, "a good download again: Loaded, no fault");
         vdev_max_apdu(15);
     }
+    // binding from ETS waits for the gateway's own application (pair.c, point 12): its download says so, and so does its
+    // record at a start; a gateway ETS has not loaded says nothing
+    fresh();
+    {
+        init_dev(&s_d[GW]);
+        s_d[GW].ia = 0xFF30;
+        publish();
+        s_started = true;   // gw_start() ran
+        g_pair_loaded = 0;
+        restart_of(0xFF30);
+        ck(g_pair_loaded == 0, "a gateway without its own application: binding from ETS does not begin");
+        static const uint8_t P[5] = {1, 1, 47, 180, 0};
+        gw_load(P, 5);
+        restart_of(0xFF30);
+        ck(g_pair_loaded == 1 && g_pair_on == 1 && g_pair_lo == 0xFF01 && g_pair_hi == 0xFF2F,
+           "its download: binding from ETS begins, with the range of its parameters");
+        reboot_clean();
+        s_have = false;    // the RAM of gw.c is gone as well
+        g_pair_loaded = 0;
+        apply(&s_d[GW]);   // as vdev_start() does with the gateway's record
+        ck(g_pair_loaded == 1, "after a start: from the gateway's record");
+        s_started = false;
+    }
     // availability: the capability of the device announce is kept, the link learns whether it sleeps
     fresh();
     {
@@ -1458,6 +1576,22 @@ int main(void)
         g_sleepy_calls = 0;
         vdev_set_capability_of(0x1234, 0x80);
         ck(g_sleepy_calls == 1 && g_sleepy_last == 1 && !s_d[z].rx_on, "capability by short address (node descriptor)");
+    }
+    // the task watchdog: the device server feeds it for every frame and every value it takes from its queues, so that a
+    // long burst is no hang, and a step that does not end is one
+    fresh();
+    {
+        int a = vdev_add(0xFFFF, 1, 0, NULL);
+        vdev_set_ia(a, 0xFF01);
+        load_light(a);
+        unsigned long f0 = g_wdt_feed;
+        uint8_t v = 0;
+        for (int i = 0; i < 10; i++) {
+            v ^= 1;
+            vdev_ko_out(100 + a, 4, &v, 1, false, true);
+        }
+        pump();
+        ck(g_wdt_feed >= f0 + 10, "ten values in the queue: the device server feeds the task watchdog for each of them");
     }
     printf("behaviour checks: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail != 0;

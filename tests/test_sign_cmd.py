@@ -104,9 +104,11 @@ def main():
         shutil.copytree(TEMPLATE, nxt)
         mp = os.path.join(nxt, "manifest.json")
         m = json.load(open(mp, encoding="utf-8"))
-        v = m["knx"]["application"]["version"]
+        given = sorted(a["version"] for a in json.load(open(os.path.join(ROOT, "producer", "issued.json"),
+                                                               encoding="utf-8"))["applications"] if a["number"] == 0xC003)
+        v = max(m["knx"]["application"]["version"], given[-1])
         m["version"] = m["knx"]["application"]["version"] = v + 1
-        m["knx"]["application"]["replaces"] = list(range(1, v + 1))
+        m["knx"]["application"]["replaces"] = given
         json.dump(m, open(mp, "w", encoding="utf-8"))
         p1, p2 = os.path.join(td, "p1.xml"), os.path.join(td, "p2.xml")
         r1 = run(PRODUCTS, nxt, "--sign-key", pem, "-o", p1)

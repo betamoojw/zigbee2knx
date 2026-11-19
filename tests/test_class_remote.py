@@ -25,7 +25,7 @@ def sends(ops):
 def main():
     check = Checks()
     m = T.manifest
-    rebuild_checks(check, T, app_version=2, replaces=[1], available=6, section=("Remotes", "Remotes"))
+    rebuild_checks(check, T, app_version=3, replaces=[1, 2], available=6, section=("Remotes", "Remotes"))
     check("E1743 is in the class table", E1743 in m["match"]["zigbeeModel"], m["match"]["zigbeeModel"])
     check("a product E1743", "E1743" in [p["model"] for p in m["products"]], None)
     avail = [o for o in m["knx"]["objects"] if o["name"] == "Available"]
@@ -56,6 +56,8 @@ def main():
     check("step of size 0 -> nothing", sends(cmd("0008,02,00000a00")) == [], None)
     check("step without a size -> nothing", sends(cmd("0008,02,00")) == [], None)
     check("move to level 127 -> KO3 128", sends(cmd("0008,04,7f0000")) == [(3, "80")], None)
+    check("move to level 254 -> KO3 255", sends(cmd("0008,04,fe0000")) == [(3, "ff")], None)
+    check("move to level 255 (no ZCL level) -> KO3 255, not 0 (off)", sends(cmd("0008,04,ff0000")) == [(3, "ff")], None)
     vm.call("knx_write", ko=5, raw="01")
     check("toggle with status on -> KO1 0", sends(cmd("0006,02,")) == [(1, "00")], None)
     check("toggle again -> KO1 1", sends(cmd("0006,02,")) == [(1, "01")], None)
@@ -93,6 +95,11 @@ def main():
     check("battery in percent (gateways that convert it): 87 % -> 0xde", status(ops) == [(4, "de", False)], status(ops))
     vm.call("params", p=T.segment(InvertSwitch=1))
     check("inverted: On -> KO1 0", sends(cmd("0006,01,")) == [(1, "00")], None)
+    vm.call("knx_write", ko=5, raw="00")
+    check("inverted, status 0 (the bus value of on): toggle switches off, KO1 1", sends(cmd("0006,02,")) == [(1, "01")], None)
+    vm.call("knx_write", ko=5, raw="01")
+    check("inverted, status 1 (off): toggle switches on, KO1 0", sends(cmd("0006,02,")) == [(1, "00")], None)
+    check("inverted, toggle again without a status: off, KO1 1", sends(cmd("0006,02,")) == [(1, "01")], None)
     availability_checks(check, T, vm, inst=1)
     ops = cmd("0006,01,")
     check("after availability: On -> KO1 only", sends(ops) == [(1, "00")] and len(effects(ops)) == 1, effects(ops))

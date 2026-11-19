@@ -34,7 +34,10 @@
   <strong>not</strong> erase; then the Zigbee network and the KNX devices stay and need not be paired again.</p>
 </div>
 
-<p>There is no image for the TULX32 yet: on it, sending on the bus, pairing and downloads have not been tested.</p>
+<p><strong>Not for the TULX32:</strong> this page writes the bootloader and the partition table of the TUL32, which
+would overwrite those of a TULX32. On a TULX32 read the whole flash first, then write only the application
+<code>zigbee2knx-@VERSION@-tulx32.bin</code> of the <a href="https://github.com/tostmann/zigbee2knx/releases">release</a>
+at 0x10000 with esptool over the service header; the way back through its recovery system has not been tested.</p>
 <p>Product files, getting started, the source and the licence (GPL-3.0):
 <a href="https://github.com/tostmann/zigbee2knx">github.com/tostmann/zigbee2knx</a>.</p>
 </body>

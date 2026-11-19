@@ -20,14 +20,17 @@ switches the gateway's programming mode, the LED is on while it is.
 | Parameter | Default |
 |---|---|
 | Bind a new Zigbee device when ETS asks for its programming button | yes |
-| Addresses for Zigbee devices in this line: first device number | 1 |
-| Addresses for Zigbee devices in this line: last device number | 48 |
+| Addresses for Zigbee devices in this line: first device number | 200 |
+| Addresses for Zigbee devices in this line: last device number | 231 |
 | Pairing window for the object and the button (s) | 180 |
 | Long frames for downloads | Long frames, 55 octets |
 
 While binding from ETS is on, the gateway takes every individual address that ETS programs in its range as a request
 to pair a Zigbee device, also when the address is meant for an ordinary KNX device. Keep the range free of other
-devices, or switch the binding off while you program them.
+devices, or switch the binding off while you program them. The default range, 200 to 231, holds the 32 places the
+gateway has at the top of the line, where ordinary devices rarely sit. ETS proposes the next free address when a device
+is inserted, so give a Zigbee device its address from the range by hand. Versions 1 to 3 of the gateway's application
+had 1 to 48.
 
 | No. | Object | DPT | |
 |---|---|---|---|
@@ -99,14 +102,13 @@ tested yet; if one fails, set the parameter to standard frames.
 
 ## Known limitations
 
-- TULX32: the firmware has started, formed its Zigbee network and received telegrams; sending on the bus, pairing,
-  downloads and the bus current with Zigbee running have not been tested, and there is no release image for it.
+- TULX32: ETS itself, pairing from ETS, the button S1 and the way back through its recovery system have not been
+  tried on it, and its bus current with Zigbee running has not been measured. The firmware caps its Zigbee transmit power at 18 dBm; at 20 dBm the bus supply did
+  not hold while the radio sent.
 - Loading a new version of a device class while another device still runs the old one needs memory for both. With
-  three classes loaded this may not fit, and the device updated last is then left without a class (worked out from
-  the code, not yet seen on a device).
+  three classes loaded this may not fit: the device updated last then does not run, and the gateway counts it in its
+  fault object (worked out from the code, not yet seen on a device).
 - The remote class (0xC004) has not run with ETS.
-- Relative colour temperature with step code 1 moves until a stop telegram and is not held within the parameterized
-  colour temperature range; the other step codes are.
 - A device that was asked to leave knows the network key and can join again while the network is open; install
   codes are not supported.
 - There is no backup function yet. The Zigbee network (its key and the joined devices) and the KNX devices live in the

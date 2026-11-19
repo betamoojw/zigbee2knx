@@ -83,7 +83,7 @@ BaseType_t xTaskCreate(void (*fn)(void *), const char *name, uint32_t stack, voi
     (void)fn; (void)name; (void)stack; (void)arg; (void)prio; (void)h;
     return pdTRUE;   // link_task runs in drain()
 }
-static int g_verbose = 1;
+static int g_verbose = 1, g_nwarn;
 static char g_dropped[256];
 void stub_log(char lvl, const char *tag, const char *fmt, ...)
 {
@@ -96,6 +96,7 @@ void stub_log(char lvl, const char *tag, const char *fmt, ...)
         char *p = strstr(b, "full, ");
         if (p) { strncat(g_dropped, p + 6, 24); strcat(g_dropped, " | "); }
     }
+    if (lvl == 'W') g_nwarn++;
     if (g_verbose) printf("    [%c %s] %s\n", lvl, tag, b);
 }
 // Berry: every request line is recorded, with the time it went to the VM
@@ -122,8 +123,30 @@ static uint8_t g_sd_req[64];
 static int64_t g_setup_t[64];
 static uint16_t g_setup_a[64];
 static int g_nsetup;
-esp_err_t zb_onoff(uint16_t d, uint8_t e, int w) { (void)d; (void)e; (void)w; return ESP_OK; }
-esp_err_t zb_level(uint16_t d, uint8_t e, uint8_t l, uint16_t t) { (void)d; (void)e; (void)l; (void)t; return ESP_OK; }
+// the stack refuses the next g_refuse commands (its lock busy for 1 s); g_up: the network is formed
+static int g_refuse, g_onoff_n, g_delay_ms;
+static bool g_up = true;
+esp_err_t zb_onoff(uint16_t d, uint8_t e, int w)
+{
+    (void)d; (void)e; (void)w;
+    g_onoff_n++;
+    if (!g_up) return 0x103;   // ESP_ERR_INVALID_STATE, as zb.c before the network is up
+    if (g_refuse > 0) { g_refuse--; return ESP_ERR_TIMEOUT; }
+    return ESP_OK;
+}
+bool zb_up(void) { return g_up; }
+void vTaskDelay(TickType_t t) { g_delay_ms += (int)t; g_now += (int64_t)t * 1000; }
+static int g_level_n, g_level_l, g_level_t;   // Move to Level: how often, the last level and transition
+static bool g_level_w;                         // ... and whether with On/Off
+esp_err_t zb_level(uint16_t d, uint8_t e, uint8_t l, uint16_t t, bool w)
+{
+    (void)d; (void)e;
+    g_level_n++;
+    g_level_l = l;
+    g_level_t = t;
+    g_level_w = w;
+    return ESP_OK;
+}
 static uint16_t g_read_addr = 0xFFFF;
 static int g_reads_to;
 static uint16_t g_basic[8];   // the attributes of the last Basic read
@@ -144,7 +167,16 @@ esp_err_t zb_level_move(uint16_t d, uint8_t e, bool u, uint8_t r, bool w) { (voi
 esp_err_t zb_level_stop(uint16_t d, uint8_t e, bool w) { (void)d; (void)e; (void)w; return ESP_OK; }
 esp_err_t zb_color_temp(uint16_t d, uint8_t e, uint16_t m, uint16_t t) { (void)d; (void)e; (void)m; (void)t; return ESP_OK; }
 esp_err_t zb_color_xy(uint16_t d, uint8_t e, uint16_t x, uint16_t y, uint16_t t) { (void)d; (void)e; (void)x; (void)y; (void)t; return ESP_OK; }
-esp_err_t zb_color_temp_move(uint16_t d, uint8_t e, int di, uint16_t r) { (void)d; (void)e; (void)di; (void)r; return ESP_OK; }
+static int g_ctm_dir, g_ctm_rate, g_ctm_lo, g_ctm_hi;   // the last Move Color Temperature
+esp_err_t zb_color_temp_move(uint16_t d, uint8_t e, int di, uint16_t r, uint16_t lo, uint16_t hi)
+{
+    (void)d; (void)e;
+    g_ctm_dir = di;
+    g_ctm_rate = r;
+    g_ctm_lo = lo;
+    g_ctm_hi = hi;
+    return ESP_OK;
+}
 esp_err_t zb_identify(uint16_t d, uint8_t e, uint16_t s) { (void)d; (void)e; (void)s; return ESP_OK; }
 esp_err_t zb_active_ep(uint16_t a) { (void)a; g_active_ep++; return ESP_OK; }
 static int g_node_req;
@@ -174,6 +206,10 @@ uint8_t vdev_endpoint_of(uint16_t zaddr)
 }
 static int g_cap_calls = 0, g_cap_last = -1;
 void vdev_set_capability_of(uint16_t zaddr, uint8_t capability) { (void)zaddr; g_cap_calls++; g_cap_last = capability; }
+// task watchdog (main.c): the link task subscribes when it starts and feeds with every step
+static unsigned long g_wdt_watch, g_wdt_feed;
+void wdt_watch(void) { g_wdt_watch++; }
+void wdt_feed(void) { g_wdt_feed++; }
 
 static void drain(void)
 {
@@ -665,6 +701,86 @@ int main(void)
     ck(!zlink_params_due(114), "a re-interview: not at once");
     advance(200000);
     ck(zlink_params_due(114) && !zlink_params_due(114), "... after PARAMS_US, once");
+
+    printf("12 the task watchdog: the link task feeds it with every event, and per device when many change at once\n");
+    ck(g_wdt_watch > 0, "the link task subscribes to the task watchdog");
+    unsigned long f0 = g_wdt_feed;
+    for (int i = 0; i < 5; i++) { tick_fire(NULL); drain(); }
+    ck(g_wdt_feed >= f0 + 5, "five rounds of the availability tick: at least five feeds");
+    uint16_t many[6] = {0x9401, 0x9402, 0x9403, 0x9404, 0x9405, 0x9406};
+    for (int i = 0; i < 6; i++) dev(many[i], 140 + i, 0, 1);
+    for (int i = 0; i < 6; i++) { zlink_sent(many[i], 0xA7); zlink_sent(many[i], 0xA7); }
+    tick_fire(NULL);
+    drain();
+    f0 = g_wdt_feed;
+    for (int i = 0; i < 6; i++) by_addr(many[i])->heard_n++;   // heard, without a nudge: the next tick decides
+    tick_fire(NULL);
+    drain();
+    ck(g_wdt_feed >= f0 + 6, "six devices come back in one round: a feed for each of them");
+
+    printf("13 a command the Zigbee stack does not take: once more after a moment, then a failed send\n");
+    static const char *const ON = "{\"op\":\"dp_set\",\"inst\":150,\"ch\":1,\"key\":\"state\",\"value\":\"ON\"}",
+                             *const OFF = "{\"op\":\"dp_set\",\"inst\":150,\"ch\":1,\"key\":\"state\",\"value\":\"OFF\"}";
+    dev(0x9501, 150, 0, 1);
+    zlink_heard(0x9501);
+    drain();
+    zlink_t *r = by_inst(150);
+    int n0 = g_onoff_n, w0 = g_nwarn, d0 = g_delay_ms;
+    zlink_out(OFF);
+    ck(g_onoff_n == n0 + 1 && r->fail_n == 0 && g_nwarn == w0, "taken at once: sent once, nothing counted, no warning");
+    esp_timer_stop(r->rb);
+    g_refuse = 1;
+    zlink_out(ON);
+    ck(g_onoff_n == n0 + 3 && g_delay_ms - d0 == RETRY_MS && r->fail_n == 0 && r->refused == 1,
+       "not taken once: sent again after RETRY_MS, taken then; no failed send");
+    ck(g_nwarn > w0 && r->rb->armed, "... a warning, and the state is read back after it");
+    g_refuse = 2;
+    w0 = g_nwarn;
+    zlink_out(OFF);
+    ck(g_onoff_n == n0 + 5 && r->fail_n == 1 && r->given_up == 1 && g_nwarn >= w0 + 2,
+       "not taken twice: two attempts, counted as a failed send, warned");
+    drain();
+    ck(!zlink_is_off(150), "one failed send: still reachable");
+    g_refuse = 2;
+    zlink_out(ON);
+    drain();
+    ck(zlink_is_off(150) && g_note_inst == 150 && g_note_on == 0,
+       "a second command that does not go out: not reachable, the gateway is told (message OFF, fault)");
+    zlink_heard(0x9501);
+    drain();
+    ck(!zlink_is_off(150) && g_note_inst == 150 && g_note_on == 1, "a frame from the device: reachable again");
+    g_up = false;
+    unsigned long f1 = r->fail_n;
+    n0 = g_onoff_n;
+    d0 = g_delay_ms;
+    zlink_out(OFF);
+    ck(g_onoff_n == n0 + 1 && g_delay_ms == d0 && r->fail_n == f1, "Zigbee not up: not sent again, not counted against the device");
+    g_up = true;
+
+    printf("14 brightness and brightness_no_onoff: Move to Level with and without On/Off, the transition before it\n");
+    static const char *const BRI = "{\"op\":\"dp_set\",\"inst\":150,\"ch\":1,\"key\":\"brightness\",\"value\":120}",
+                             *const TRANS = "{\"op\":\"dp_set\",\"inst\":150,\"ch\":1,\"key\":\"transition\",\"value\":1.5}",
+                             *const BRI0 = "{\"op\":\"dp_set\",\"inst\":150,\"ch\":1,\"key\":\"brightness_no_onoff\",\"value\":60}";
+    n0 = g_level_n;
+    zlink_out(BRI);
+    ck(g_level_n == n0 + 1 && g_level_l == 120 && g_level_t == 0 && g_level_w, "brightness: Move to Level with On/Off");
+    zlink_out(ON);
+    zlink_out(TRANS);
+    zlink_out(BRI0);
+    ck(g_level_n == n0 + 2 && g_level_l == 60 && g_level_t == 15 && !g_level_w,
+       "On, then the transition and brightness_no_onoff: Move to Level without On/Off in 1.5 s");
+    zlink_out(BRI);
+    ck(g_level_n == n0 + 3 && g_level_t == 0 && g_level_w, "the transition went with that command only");
+    drain();
+
+    printf("15 color_temp_move: a rate alone, a rate with bounds in mired, a stop\n");
+    zlink_out("{\"op\":\"dp_set\",\"inst\":150,\"ch\":1,\"key\":\"color_temp_move\",\"value\":-55}");
+    ck(g_ctm_dir == -1 && g_ctm_rate == 55 && g_ctm_lo == 0 && g_ctm_hi == 0, "-55: cooler at 55 mired/s, the lamp's own limits");
+    zlink_out("{\"op\":\"dp_set\",\"inst\":150,\"ch\":1,\"key\":\"color_temp_move\",\"value\":\"40,250,370\"}");
+    ck(g_ctm_dir == 1 && g_ctm_rate == 40 && g_ctm_lo == 250 && g_ctm_hi == 370, "40,250,370: warmer at 40 mired/s within 250..370");
+    zlink_out("{\"op\":\"dp_set\",\"inst\":150,\"ch\":1,\"key\":\"color_temp_move\",\"value\":\"stop\"}");
+    ck(g_ctm_dir == 0 && g_ctm_rate == 0 && g_ctm_lo == 0 && g_ctm_hi == 0, "stop");
+    drain();
 
     printf("zlink checks: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail != 0;

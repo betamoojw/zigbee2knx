@@ -43,6 +43,17 @@
 //  11. One of our devices that joins anew (Device_Update "joined", not a rejoin) was reset by hand: it stays with its
 //      virtual device and is set up again (binding, reporting, its parameters). It does not become the new device
 //      an open network waits for.
+//  12. Binding from ETS waits for the gateway's own application: until ETS has loaded it once (its parameters say
+//      whether to bind and which addresses), an address assignment on the line opens nothing. A gateway fresh from the
+//      box would otherwise open its network for every assignment in 15.15.1 .. 15.15.48, and two of them on one line
+//      both (review A, N10). The pairing window (point 7) does not wait for it; a device that came through it waits
+//      for an address until the gateway is loaded.
+//  13. A device that joins while neither a series nor the window holds the network open is asked to leave, with a
+//      warning, and the network is closed once more: a router let it in. A device that has just joined opens the
+//      network for 180 s after its key exchange (point 6); closing it here reaches the routers as well (zb.c:
+//      ezb_bdb_close_network() broadcasts a Mgmt_Permit_Joining_req with duration 0 to all routers, as the disassembly
+//      of esp-zigbee-lib 2.0.1 shows; not seen on the air). Before, such a device stayed a member nobody served
+//      (review A, M1). The console's "join" opens the network by hand: whoever joins while it holds it open stays.
 //
 // The read is not addressed to us: every address assignment on the line looks the same. The range is what ties it to
 // this gateway; without a target inside it nothing opens. ETS does not say which product it is about to load, so the
@@ -99,7 +110,7 @@ static const char *TAG = "pair";
 // ST_WINDOW: the gateway's object or button opened the network (gw.c); the first device that joins waits for ETS
 enum { ST_IDLE, ST_OPEN, ST_AUTH, ST_CHECK, ST_PENDING, ST_DONE, ST_WINDOW };
 enum { EV_PROBE, EV_POLL, EV_ASSIGNED, EV_UPDATE, EV_ANNOUNCE, EV_AUTHORIZED, EV_LEFT, EV_OPENED, EV_HEARD, EV_WINDOW,
-       EV_UNLOADED, EV_REMOVED, EV_PROG_ENDED };
+       EV_UNLOADED, EV_REMOVED, EV_PROG_ENDED, EV_MANUAL };
 
 typedef struct {
     uint8_t type, ok;
@@ -113,7 +124,9 @@ typedef struct {
 static QueueHandle_t s_q;
 static nvs_handle_t s_nvs;
 static bool s_nvs_ok, s_enabled = true;
-static uint16_t s_lo = 0xFF01, s_hi = 0xFF30;   // default 15.15.1 .. 15.15.48; gw.c or the console sets another range
+static volatile bool s_gw_loaded;   // the gateway's own application is loaded (point 12); set by gw.c, RAM only
+static uint16_t s_lo = 0xFFC8, s_hi = 0xFFE7;   // default 15.15.200 .. 15.15.231 as in the gateway's application
+                                                 // (version 4); gw.c or the console sets another range
 static atomic_uint s_dropped;
 
 // The last question of every source that asks (an ETS, through whichever interface): the address it asked for, and
@@ -159,7 +172,8 @@ static volatile uint16_t s_pend_sa[PEND_MAX];    // ... the short address it had
 static int64_t s_pend_t[PEND_MAX];               // ... when it was asked last (not kept over a restart)
 static volatile uint8_t s_pend_n;
 static uint32_t s_n_open, s_n_bound, s_n_asked, s_n_ignored, s_n_reclosed, s_n_expired, s_n_window, s_n_waiting;
-static uint32_t s_n_unloaded, s_n_again;
+static uint32_t s_n_unloaded, s_n_again, s_n_stray;   // s_n_stray: joined while nothing here held the network open
+static int64_t s_manual_until;                        // the console's "join" holds the network open until then
 static int64_t s_scan_t;
 
 static void ia_str(uint16_t a, char out[12])
@@ -235,6 +249,12 @@ void pair_removed(const uint8_t ieee[8])
 {
     ev_t e = {.type = EV_REMOVED};
     memcpy(e.ieee, ieee, 8);
+    post(&e);
+}
+
+void pair_manual(int seconds)   // console "join": whoever joins in these seconds stays (0: the console closed it)
+{
+    ev_t e = {.type = EV_MANUAL, .a = (uint16_t)(seconds < 0 ? 0 : seconds)};
     post(&e);
 }
 
@@ -814,13 +834,15 @@ static void on_poll(uint16_t src, int64_t now)
         s_own = q->own;
         s_polls = 0;
         s_told = false;
-        if (!s_enabled || (s_own < 0 && (s_target < s_lo || s_target > s_hi))) {
+        if (!s_gw_loaded || !s_enabled || (s_own < 0 && (s_target < s_lo || s_target > s_hi))) {
             char t[12];
             ia_str(s_target, t);
             s_n_ignored++;
             s_note_t = now;
             ESP_LOGI(TAG, "ETS asks for %s: %s, nothing opens", t,
-                     s_enabled ? "not an address of this gateway" : "binding from ETS is switched off");
+                     !s_gw_loaded ? "the gateway's own application is not loaded yet, binding from ETS waits for it"
+                     : s_enabled  ? "not an address of this gateway"
+                                  : "binding from ETS is switched off");
             return;
         }
         s_armed = true;
@@ -1000,7 +1022,8 @@ static bool came_back(uint16_t sa, const uint8_t ieee[8], int64_t now)
 }
 
 // A device joined anew and is none of ours. In an open series or window it is the candidate from here on: its announce
-// is not waited for (point 2). At any other time it is asked to leave.
+// is not waited for (point 2). At any other time it is asked to leave (points 2 and 13), unless the console's "join"
+// holds the network open.
 static void joined(const ev_t *e, int64_t now)
 {
     uint16_t sa = e->a;
@@ -1017,8 +1040,16 @@ static void joined(const ev_t *e, int64_t now)
         s_st = ST_AUTH;
         close_network(now, "a device joined");
         ESP_LOGI(TAG, "0x%04x joined, waiting for its key exchange", sa);
+    } else if (s_st == ST_IDLE && now < s_manual_until) {
+        ESP_LOGI(TAG, "0x%04x joined while the console's \"join\" holds the network open: it stays (\"vdev add\" "
+                 "links it)", sa);
     } else if (s_st != ST_IDLE || (s_closed && now - s_closed < GUARD_US)) {
         ask_to_leave(sa, e->ieee, "joined in the same window");
+    } else {
+        s_n_stray++;
+        ESP_LOGW(TAG, "0x%04x joined while nothing here held the network open: a router let it in", sa);
+        ask_to_leave(sa, e->ieee, "joined while nothing was open");
+        close_network(now, "a device joined while nothing was open");
     }
 }
 
@@ -1181,7 +1212,9 @@ static void pair_task(void *arg)
 {
     (void)arg;
     ev_t e;
+    wdt_watch();
     for (;;) {
+        wdt_feed();   // an event or a second without one: a step for the task watchdog
         bool got = xQueueReceive(s_q, &e, pdMS_TO_TICKS(1000)) == pdTRUE;
         int64_t now = esp_timer_get_time();
         if (got) {
@@ -1221,6 +1254,7 @@ static void pair_task(void *arg)
                 close_network(now, "nobody here asked for it");
                 break;
             case EV_WINDOW: on_window(e.a, now); break;
+            case EV_MANUAL: s_manual_until = e.a ? now + (int64_t)e.a * 1000000 : 0; break;
             }
         }
         on_tick(now);
@@ -1262,8 +1296,14 @@ void pair_start(void)   // after vdev_start(): the storage partition is up then
     char a[12], b[12];
     ia_str(s_lo, a);
     ia_str(s_hi, b);
-    ESP_LOGI(TAG, "binding from ETS is %s, addresses %s .. %s; %d devices wait for an address, %u were asked to leave "
-             "and have not been seen leaving", s_enabled ? "on" : "off", a, b, waiting, (unsigned)s_pend_n);
+    ESP_LOGI(TAG, "binding from ETS is %s%s, addresses %s .. %s; %d devices wait for an address, %u were asked to "
+             "leave and have not been seen leaving", s_enabled ? "on" : "off",
+             s_gw_loaded ? "" : " (once the gateway's own application is loaded)", a, b, waiting, (unsigned)s_pend_n);
+}
+
+void pair_gw_loaded(void)   // gw.c: the gateway's own application is loaded, its parameters apply from now on
+{
+    s_gw_loaded = true;
 }
 
 void pair_enable(bool on)   // off: a series that runs is not continued, its next question finds it switched off
@@ -1308,14 +1348,15 @@ void pair_print(void)
     char a[12], b[12];
     ia_str(s_lo, a);
     ia_str(s_hi, b);
-    printf("pair: binding from ETS %s, addresses %s .. %s, %s; opened %lu, bound %lu, asked to leave %lu, removed "
+    printf("pair: binding from ETS %s%s, addresses %s .. %s, %s; opened %lu, bound %lu, asked to leave %lu, removed "
            "after waiting %lu, questions not for us %lu, closed again after somebody else opened the network %lu, "
            "pairing windows %lu with %lu devices, events lost %u\n",
-           s_enabled ? "on" : "off", a, b, ST[s_st], (unsigned long)s_n_open, (unsigned long)s_n_bound,
+           s_enabled ? "on" : "off", s_gw_loaded ? "" : " (waits for the gateway's first download)", a, b, ST[s_st],
+           (unsigned long)s_n_open, (unsigned long)s_n_bound,
            (unsigned long)s_n_asked, (unsigned long)s_n_expired, (unsigned long)s_n_ignored,
            (unsigned long)s_n_reclosed, (unsigned long)s_n_window, (unsigned long)s_n_waiting,
            (unsigned)atomic_load(&s_dropped));
     printf("pair: removed after ETS unloaded the address %lu; asked to leave and not seen leaving %u (asked again when "
-           "they show up: %lu times so far)\n", (unsigned long)s_n_unloaded, (unsigned)s_pend_n,
-           (unsigned long)s_n_again);
+           "they show up: %lu times so far); joined while nothing was open %lu\n", (unsigned long)s_n_unloaded,
+           (unsigned)s_pend_n, (unsigned long)s_n_again, (unsigned long)s_n_stray);
 }

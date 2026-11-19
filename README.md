@@ -103,23 +103,26 @@ The title image is an illustration; the laptop shows a real ETS screenshot.
 
 ## Hardware
 
-Runs best with the busware **TUL32** (KNX TP, powered over USB) and, once tested, the bus-powered **TULX32** (see [Status](#status)): <https://busware.de>.
+Runs best with the busware **TUL32** (KNX TP, powered over USB) and the bus-powered **TULX32** ([Status](#status) lists what has been tested on each): <https://busware.de>.
 
 Other ESP32-C6 boards with an NCN5130 need their pins in [`firmware/main/board.h`](firmware/main/board.h).
 
 ## Getting started
 
 1. **Flash the firmware** from the browser with the [web installer](https://tostmann.github.io/zigbee2knx/) (Chrome,
-   Edge or Opera), or with esptool from the images attached to the [releases](../../releases); to build it yourself
-   see [docs/building-firmware.md](docs/building-firmware.md). There is no release image for the TULX32 yet (see
-   [Status](#status)).
+   Edge or Opera; TUL32 only), or with esptool from the images attached to the [releases](../../releases); to build it
+   yourself see [docs/building-firmware.md](docs/building-firmware.md). On a TULX32 do not use the web installer, it
+   would overwrite the bootloader and the partition table: write only the application,
+   `zigbee2knx-<version>-tulx32.bin`, at 0x10000 with esptool over the service header. Read the whole flash first
+   (`esptool read-flash 0 0x400000 backup.bin`): this replaces the application the TULX32 was delivered with, and the
+   way back through its recovery system has not been tested.
 2. **Build the product files** with OpenKNXproducer and your ETS, as described
    [below](#building-the-product-files), and import them into ETS.
-3. **Add the gateway.** Insert "Zigbee gateway (TUL32)" into a line, program its individual address (button S1),
-   set the range of device numbers for Zigbee devices and download it. Keep that range free of other KNX devices:
-   the gateway takes every address ETS programs in it as a request to pair a Zigbee device.
+3. **Add the gateway.** Insert "Zigbee gateway (TUL32)", the product for both boards, into a line, program its
+   individual address (button S1), set the range of device numbers for Zigbee devices and download it. Keep that range
+   free of other KNX devices: the gateway takes every address ETS programs in it as a request to pair a Zigbee device.
 4. **Add a Zigbee device.** Insert its product (for example "IKEA LED1934G3 …") into the same line with an address in
-   that range and program the individual address. While ETS waits, reset the Zigbee device or put it into pairing
+   that range (by default 200 to 231) and program the individual address. While ETS waits, reset the Zigbee device or put it into pairing
    mode: it joins and takes the address. Then download the application and link the group objects.
 
 [docs/getting-started.md](docs/getting-started.md) has the details, the gateway's objects and the known limitations.
@@ -170,21 +173,31 @@ welcome, see [Concept](#concept).
 
 ## Status
 
-What has run with ETS 6.4.1 on a TUL32 with the firmware of this source and the applications in `producer/` (0xC000
-v3, 0xC001 v3, 0xC002 v4, 0xC003 v3): import of the product files and of a project with these devices, downloads with
-long frames, pairing a plug from ETS, switching, brightness and colour temperature with status feedback, and the
-gateway's diagnostic objects. With earlier development builds of 0.6 also: partial downloads, the "Zigbee device
-reachable" object in both directions, unloading an address (the device is removed and asked to leave the Zigbee
-network), and updating a device to a newer application version. With development builds before 0.6: programming the
-gateway's address with its button S1, and inserting devices from the catalog. Devices on the bench: IKEA LED1934G3,
-LED2201G8 and E2204.
+What has run with ETS 6.4.1 on a TUL32 with development builds of 0.6.1: import of the product files in `producer/`
+(0xC000 v4, 0xC001 v5, 0xC002 v6, 0xC003 v4), and updating and downloading the devices of a project, in two steps
+from the versions of 0.6.0. After the update to 0xC002 v6 that light did not run until the gateway was restarted; the
+cause is fixed in 0.6.1, and the fix was tested with a bench tool, not again with ETS. From a bench tool over a
+KNXnet/IP tunnel, with the image of release 0.6.1 on the same TUL32: switching, dimming and colour temperature with
+status feedback, the gateway's diagnostic objects, downloads with long frames, updates of the white spectrum light in
+place, and the applications of 0.6.0 (0xC001 v3, 0xC002 v4, 0xC003 v3) loaded by downloads, 0xC002 v4 also at a
+restart. With 0.6.0 and its applications, from ETS: import of a project, pairing a plug, and switching, brightness and
+colour temperature with status feedback in the group monitor. With earlier development builds of 0.6:
+partial downloads, the "Zigbee device reachable" object in both directions, and unloading an address (the device is
+removed and asked to leave the Zigbee network). With development builds before 0.6: programming the gateway's address
+with its button S1, and inserting devices from the catalog. Devices on the bench: IKEA LED1934G3, LED2201G8 and E2204.
 
-On a TULX32 the firmware has started, formed its Zigbee network and received telegrams from the bus. Sending on the
-bus, pairing, downloads and the bus current with Zigbee running have not been tested on it, so this release has no
-image for it.
+On a TULX32, powered from the bus, a development build of 0.6.1 ran a two-hour load test with an IKEA plug that had
+joined through the pairing window: switching with status feedback, reading, eight downloads, four of them with long
+frames, no restart. The image of release 0.6.1 started there, formed its network and, without a Zigbee device joined,
+took downloads from a bench tool instead of ETS: the gateway's application, then the plug and the white spectrum light
+applications with long frames (the latter seven times, no restart). On the TULX32 the firmware caps the Zigbee
+transmit power at 18 dBm: at 20 dBm the bus supply did not hold while the radio sent. Not tried on the TULX32: ETS
+itself, pairing from ETS, the button S1, and the way back through its recovery system; its bus current with Zigbee
+running has not been measured.
 
-Not done yet: the pairing window opened by the gateway's button, the remote class with ETS, long frames through line
-couplers and USB interfaces, the TULX32 (see above), and installations with more than a few real Zigbee devices. Known
+Not done yet: pairing from ETS with 0.6.1 (last run with 0.6.0; the pairing window ran with development builds of
+0.6.1), the pairing window opened by the gateway's button, the remote class with ETS, long frames through line couplers
+and USB interfaces, ETS with a TULX32 (see above), and installations with more than a few real Zigbee devices. Known
 issues are listed in [docs/getting-started.md](docs/getting-started.md#known-limitations).
 
 ## Questions and issues

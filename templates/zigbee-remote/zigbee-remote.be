@@ -120,7 +120,8 @@ end
 def knx_write(ko, raw)
 var Z = zb_remote
 if ko == Z.KO_SWITCH_STATUS && raw.size() == 1
-host.state_set('sw', (raw[0] & 1) != 0)
+var v = (raw[0] & 1) != 0
+host.state_set('sw', Z.cfg()['inv'] ? !v : v)
 else
 host.log('ko_write_ignored', {'ko': ko, 'value': raw.tohex()})
 end
@@ -173,7 +174,8 @@ elif cluster == 0x0008
 var up = size(p) > 0 && p[0] == 0
 if (c == 0x00 || c == 0x04) && size(p) > 0
 var b = bytes()
-b.add((p[0] * 255 + 127) / 254, 1)
+var v = (p[0] * 255 + 127) / 254
+b.add(v > 255 ? 255 : v, 1)
 host.ko_send(Z.KO_VALUE, b)
 elif c == 0x01 || c == 0x05
 Z.dim(up ? 0x09 : 0x01)

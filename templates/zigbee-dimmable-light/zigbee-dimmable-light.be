@@ -15,6 +15,7 @@ static F_LEVEL_START = 1
 static F_IDENTIFY = 2
 static F_CT_START = 4
 static F_FREEZE = 8
+static F_LEVEL_FIRST = 16
 static MODELS = {'Floor lamp WW': [1, 0, 0, 3], 'TRADFRI transformer 10W': [2, 0, 0, 3], 'TRADFRI Driver 10W': [2, 0, 0, 3], 'SILVERGLANS IP44 LED driver': [2, 0, 0, 3], 'TRADFRI transformer 30W': [2, 0, 0, 3], 'TRADFRI Driver 30W': [2, 0, 0, 3], 'TRADFRI bulb E26 opal 1000lm': [1, 0, 0, 3], 'TRADFRI bulb E26 W opal 1000lm': [1, 0, 0, 3], 'TRADFRI bulb E27 opal 1000lm': [1, 0, 0, 3], 'TRADFRI bulb E27 W opal 1000lm': [1, 0, 0, 3], 'TRADFRI bulb E14 W op/ch 400lm': [1, 0, 0, 3], 'TRADFRI bulb E12 W op/ch 400lm': [1, 0, 0, 3], 'TRADFRI bulb E17 W op/ch 400lm': [1, 0, 0, 3], 'TRADFRI bulb GU10 W 400lm': [1, 0, 0, 3], 'TRADFRI bulb E27 WW 806lm': [2, 0, 0, 3], 'TRADFRI bulb E26 WW 806lm': [2, 0, 0, 3], 'TRADFRI bulb GU10 WW 400lm': [1, 0, 0, 3], 'TRADFRI bulb E27 WW clear 250lm': [1, 0, 0, 3], 'TRADFRI bulb E26 WW clear 250lm': [1, 0, 0, 3], 'TRADFRIbulbE27WWclear250lm': [2, 0, 0, 3], 'TRADFRIbulbE26WWclear250lm': [2, 0, 0, 3], 'TRADFRIbulbE14WWclear250lm': [1, 0, 0, 3], 'TRADFRIbulbE12WWclear250lm': [1, 0, 0, 3], 'TRADFRIbulbE17WWclear250lm': [1, 0, 0, 3], 'TRADFRIbulbE26WWglobeclear250lm': [1, 0, 0, 3], 'TRADFRIbulbE12WWcandleclear250lm': [1, 0, 0, 3], 'TRADFRI bulb E27 WW G95 CL 470lm': [1, 0, 0, 3], 'TRADFRI bulb E26 WW G95 CL 450lm': [1, 0, 0, 3], 'TRADFRI bulb E26 WW G95 CL 440lm': [1, 0, 0, 3], 'TRADFRI bulb E26 WW G95 CL 470lm': [1, 0, 0, 3], 'TRADFRI bulb E26 WW globe 800lm': [1, 0, 0, 3], 'TRADFRI bulb E26 WW globe 806lm': [1, 0, 0, 3], 'TRADFRI bulb E26 WW globe 810lm': [1, 0, 0, 3], 'TRADFRI bulb E27 WW globe 806lm': [1, 0, 0, 3], '\x1aTRADFRI bulb GU10 WW 345lm': [1, 0, 0, 3], 'TRADFRI bulb GU10 WW 345lm': [1, 0, 0, 3], '\\u001TRADFRI bulb GU10 WW 345lm': [1, 0, 0, 3], '\x1aTRADFRI bulb GU10 WW 345lm8': [1, 0, 0, 3], 'TRADFRI bulb GU10 WW 380lm': [1, 0, 0, 3], 'Pendant lamp WW': [2, 0, 0, 3], 'STOFTMOLN ceiling/wall lamp WW24': [1, 0, 0, 3], 'STOFTMOLN ceiling/wall lamp WW37': [1, 0, 0, 3], 'STOFTMOLN ceiling/wall lamp WW10': [1, 0, 0, 3], 'STOFTMOLN ceiling/wall lamp WW15': [1, 0, 0, 3]}
 static P_POB = 0
 static P_START = 1
@@ -64,9 +65,15 @@ static def level()
 var Z = zb_light
 var m = host.state_get('lv')
 if m != nil && host.now_ms() < m[2] + m[3] + Z.SETTLE_MS return m[1] end
-if host.dp_get(Z.EP, 'state') != 'ON' return 0 end
 var b = host.dp_get(Z.EP, 'brightness')
-return b == nil ? 0 : b
+if host.dp_get(Z.EP, 'state') == 'OFF' || b == nil return 0 end
+return b
+end
+static def pending(b)
+var m = host.state_get('lv')
+var t = host.state_get('bt')
+return m != nil && m[1] > 0 && m[1] != b && (t == nil || t <= m[2]) &&
+host.now_ms() < m[2] + m[3] + zb_light.SETTLE_MS
 end
 static def moving(key, at, to, tenths)
 host.state_set(key, [at, to, host.now_ms(), tenths * 100])
@@ -79,14 +86,25 @@ var at = m[0] + (m[1] - m[0]) * (now - m[2]) / m[3]
 host.state_set(key, [at, at, now, 0])
 end
 end
+static def bri_cmd(to, tenths, from_off, on)
+var Z = zb_light
+if Z.has(Z.F_LEVEL_FIRST)
+if !from_off && tenths > 0 host.dp_set(Z.EP, 'transition', real(tenths) / 10) end
+host.dp_set(Z.EP, 'brightness_no_onoff', to)
+if on host.dp_set(Z.EP, 'state', 'ON') end
+return
+end
+if tenths > 0 host.dp_set(Z.EP, 'transition', real(tenths) / 10) end
+host.dp_set(Z.EP, 'brightness', to)
+end
 static def set_bri(c, bri)
 var Z = zb_light
 var lo = Z.pct_to_bri(c['min'])
 var hi = Z.pct_to_bri(c['max'])
 var to = Z.clamp(bri, lo, hi)
-Z.moving('lv', Z.level(), to, c['trans'])
-Z.transition(c)
-host.dp_set(Z.EP, 'brightness', to)
+var at = Z.level()
+Z.moving('lv', at, to, at == 0 && Z.has(Z.F_LEVEL_FIRST) ? 0 : c['trans'])
+Z.bri_cmd(to, c['trans'], at == 0, true)
 end
 static def off(c)
 var Z = zb_light
@@ -99,7 +117,7 @@ var Z = zb_light
 var code = raw & 0x07
 if code == 0
 Z.stopped('lv')
-host.dp_set(Z.EP, c['roe'] ? 'brightness_move_onoff' : 'brightness_move', 'stop')
+host.dp_set(Z.EP, c['roe'] && !Z.has(Z.F_LEVEL_FIRST) ? 'brightness_move_onoff' : 'brightness_move', 'stop')
 return
 end
 var lo = Z.pct_to_bri(c['min'])
@@ -109,6 +127,12 @@ var at = Z.level()
 var to = 0
 if (raw & 0x08) != 0
 if at == 0
+if Z.has(Z.F_LEVEL_FIRST)
+to = Z.clamp(lo + d, lo, hi)
+Z.moving('lv', 0, to, 0)
+Z.bri_cmd(to, 0, true, true)
+return
+end
 host.dp_set(Z.EP, 'brightness', lo)
 at = lo
 end
@@ -128,8 +152,7 @@ return
 end
 var t = ((to > at ? to - at : at - to) * 10 + c['rate'] / 2) / c['rate']
 Z.moving('lv', at, to, t)
-if t > 0 host.dp_set(Z.EP, 'transition', real(t) / 10) end
-host.dp_set(Z.EP, 'brightness', to)
+Z.bri_cmd(to, t, false, (raw & 0x08) != 0)
 end
 end
 def knx_write(ko, raw)
@@ -138,7 +161,7 @@ var c = Z.cfg()
 if ko == Z.KO_SWITCH && raw.size() == 1
 if (raw[0] & 1) != 0
 var bri = Z.pct_to_bri(c['osv'])
-var last = host.dp_get(Z.EP, 'brightness')
+var last = host.state_get('on_bri')
 if c['mf'] && last != nil && last > 0 bri = last end
 Z.set_bri(c, bri)
 else
@@ -173,13 +196,19 @@ host.ko_status(Z.KO_SWITCH_STATUS, on ? bytes('01') : bytes('00'), initial)
 var b = host.dp_get(Z.EP, 'brightness')
 if !on
 host.ko_status(Z.KO_VALUE_STATUS, bytes('00'), initial)
-elif b != nil
+elif b != nil && !Z.pending(b)
 host.ko_status(Z.KO_VALUE_STATUS, Z.bri_byte(b), initial)
+if b > 0 host.state_set('on_bri', b) end
 end
 elif key == 'brightness'
-if host.dp_get(Z.EP, 'state') != 'OFF'
+host.state_set('bt', host.now_ms())
+var st = host.dp_get(Z.EP, 'state')
+if st != 'OFF'
 host.ko_status(Z.KO_VALUE_STATUS, Z.bri_byte(value), initial)
 end
+var m = host.state_get('lv')
+var to_off = m != nil && m[1] == 0 && host.now_ms() < m[2] + m[3] + Z.SETTLE_MS
+if st == 'ON' && value > 0 && !to_off host.state_set('on_bri', value) end
 end
 end
 def params(p)

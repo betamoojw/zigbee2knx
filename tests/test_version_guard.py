@@ -91,11 +91,20 @@ def main():
               r.stderr)
 
         print("the generator alone keeps to the versions given out")
+        # the switch template at the highest version of 0xC003 given out (the tree may hold a newer one not yet given out)
+        given = sorted(a["version"] for a in json.load(open(os.path.join(ROOT, "producer", "issued.json"),
+                                                               encoding="utf-8"))["applications"] if a["number"] == 0xC003)
+        out_t = os.path.join(td, "switch-given")
+        shutil.copytree(os.path.join(ROOT, "templates", "zigbee-switch"), out_t)
+        mg = json.load(open(os.path.join(out_t, "manifest.json"), encoding="utf-8"))
+        mg["version"] = mg["knx"]["application"]["version"] = given[-1]
+        mg["knx"]["application"]["replaces"] = given[:-1]
+        json.dump(mg, open(os.path.join(out_t, "manifest.json"), "w", encoding="utf-8"))
         c = os.path.join(td, "c.xml")
-        r = run(GEN, os.path.join(ROOT, "templates", "zigbee-switch"), "--sign-key", pem, "-o", c)
+        r = run(GEN, out_t, "--sign-key", pem, "-o", c)
         check("a version given out, signed with another key into a new file, is refused",
               r.returncode != 0 and "has been given out" in r.stderr, r.stderr[-300:])
-        r = run(GEN, os.path.join(ROOT, "templates", "zigbee-switch"), "--sign-key", pem, "-o", c, "--overwrite-version")
+        r = run(GEN, out_t, "--sign-key", pem, "-o", c, "--overwrite-version")
         check("--overwrite-version does not change that", r.returncode != 0 and "has been given out" in r.stderr,
               r.stderr[-300:])
         check("nothing was written", not os.path.exists(c))
@@ -142,10 +151,11 @@ def main():
         r = run(PRODUCTS, t, "--sign-key", pem, "-o", out)
         check("a new version whose replaces leave out version 1 (given out): refused",
               r.returncode != 0 and "ReplacesVersions" in r.stderr and not os.path.exists(out), r.stderr[-300:])
-        m["knx"]["application"]["replaces"] = [1, 2, 3]
+        m["knx"]["application"]["replaces"] = given   # every version of 0xC003 given out, all below 9
         json.dump(m, open(mp, "w", encoding="utf-8"))
         r = run(PRODUCTS, t, "--sign-key", pem, "-o", out)
-        check("the same with replaces 1, 2 and 3: written", r.returncode == 0 and os.path.exists(out), r.stderr[-300:])
+        check(f"the same with replaces {given} (every version given out): written",
+              r.returncode == 0 and os.path.exists(out), r.stderr[-300:])
 
     print(f"{count} checks, {failed} failed")
     sys.exit(1 if failed else 0)

@@ -1,7 +1,7 @@
 {
   "schema": "knxgw-template/0",
   "id": "zigbee.class.dimmable",
-  "version": 3,
+  "version": 5,
   "title": "Zigbee dimmable light as a KNX dimming actuator",
   "radio": "zigbee",
   "match": {
@@ -62,6 +62,7 @@
     "write": [
       "1.state",
       "1.brightness",
+      "1.brightness_no_onoff",
       "1.brightness_move",
       "1.brightness_move_onoff",
       "1.transition",
@@ -433,6 +434,7 @@
     "zigbee-herdsman cluster lightingColorCtrl: colorTempPhysicalMin 0x400B, colorTempPhysicalMax 0x400C"
   ],
   "open": [
+    "brightness_no_onoff (models with flag 16) needs gateway firmware 0.6.1 or later; older firmware drops it, and such a lamp goes on at its last brightness",
     "Parameters live in host.state; after a VM restart the defaults apply until the next params call",
     "The radio adapter must deliver 0.zigbeeModel (and colorTempPhysicalMin/Max) as datapoints"
   ],
@@ -442,9 +444,11 @@
     "application": {
       "name": "Zigbee dimmable light",
       "number": 49153,
-      "version": 3,
+      "version": 5,
       "replaces": [
-        2
+        2,
+        3,
+        4
       ],
       "mask": "MV-07B0",
       "order_info": "ZB-LIGHT-D"
@@ -693,7 +697,7 @@
         {
           "offset": 8,
           "name": "TransitionTime",
-          "text": "Transition for switching and values (0.1 s)",
+          "text": "Transition for switching on and for values (0.1 s)",
           "type": "Tenths",
           "default": 0,
           "zigbee": "Zigbee2MQTT option transition (seconds), sent before each command"

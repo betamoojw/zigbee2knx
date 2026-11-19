@@ -8,17 +8,17 @@ In the ETS catalog the products lie in the section **Zigbee2KNX**, in one subsec
 
 | Application | Version | Replaces |
 |---|---|---|
-| 0xC000 gateway | 3 | 1, 2 |
-| 0xC001 dimmable light | 3 | 2 |
-| 0xC002 white spectrum light | 4 | 2, 3 |
-| 0xC003 switch and plug | 3 | 1, 2 |
-| 0xC004 remote | 2 | 1 |
+| 0xC000 gateway | 4 | 1, 2, 3 |
+| 0xC001 dimmable light | 5 | 2, 3, 4 |
+| 0xC002 white spectrum light | 6 | 2, 3, 4, 5 |
+| 0xC003 switch and plug | 4 | 1, 2, 3 |
+| 0xC004 remote | 3 | 1, 2 |
 
 A new version keeps the group objects and parameters of the earlier ones with their numbers and meaning, so that ETS can update a device to it. The versions that have been given out are listed in `producer/issued.json`.
 
 ## Dimmable light (0xC001)
 
-23 products from 23 Zigbee2MQTT definitions. Catalog: Zigbee2KNX › Lights. Relative dimming (DPT 3.007) moves by the step the telegram carries, 1/2^(code-1) of the range, within the minimum and maximum brightness. The transition time applies to switching on and to brightness values; switching off is the plain On/Off command Off, which carries no transition time.
+23 products from 23 Zigbee2MQTT definitions. Catalog: Zigbee2KNX › Lights. Relative dimming (DPT 3.007) moves by the step the telegram carries, 1/2^(code-1) of the range, within the minimum and maximum brightness. The transition time applies to switching on and to brightness values; switching off is the plain On/Off command Off, which carries no transition time. With the memory function the light comes on with the last brightness it reported while it was on. Switched on by a brightness value or by dimming up, the brightness status goes out once the light has reported its new brightness, not before with the old one.
 
 | Model | Description |
 |---|---|
@@ -48,7 +48,9 @@ A new version keeps the group objects and parameters of the earlier ones with th
 
 ## White spectrum light (0xC002)
 
-48 products from 35 Zigbee2MQTT definitions; the others are white-label names and order numbers of the same devices. Catalog: Zigbee2KNX › Lights. Relative dimming of brightness and of colour temperature moves by the step the telegram carries; step code 1 of the colour temperature fades until a stop telegram or the end of the lamp's range. The transition time applies to switching on and to brightness values, to colour temperature only with "Use the transition time for colour temperature"; switching off is the plain On/Off command Off, which carries no transition time. The parameters "Minimum colour temperature" and "Maximum colour temperature" default to 1000 K and 10000 K, which means no limit: the lamp's own range applies on top of them in any case.
+48 products from 35 Zigbee2MQTT definitions; the others are white-label names and order numbers of the same devices. Catalog: Zigbee2KNX › Lights. Relative dimming of brightness and of colour temperature moves by the step the telegram carries; step code 1 of the colour temperature fades until a stop telegram or the end of the range, that is the minimum and maximum colour temperature within the lamp's own range. The transition time applies to switching on and to brightness values, to colour temperature only with "Use the transition time for colour temperature"; switching off is the plain On/Off command Off, which carries no transition time. The parameters "Minimum colour temperature" and "Maximum colour temperature" default to 1000 K and 10000 K, which means no limit: the lamp's own range applies on top of them in any case. With the memory function the light comes on with the last brightness it reported while it was on. Switched on by a brightness value or by dimming up, the brightness status goes out once the light has reported its new brightness, not before with the old one.
+
+The LED2201G8 (software build 3.0.22) restarts when it gets Move to Level with On/Off while it is off. The class therefore never sends it that command: it gets its brightness without On/Off, and from off it is switched on after that. It then comes on with its own fade instead of the transition time, and a stop of relative dimming does not carry On/Off. This needs firmware 0.6.1 or later; with older firmware the LED2201G8 comes on with its last brightness.
 
 | Model | Description |
 |---|---|

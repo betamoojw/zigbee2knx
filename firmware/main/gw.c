@@ -44,7 +44,9 @@
 //   in programming mode (an address assignment under way, or the ETS diagnostics switched its "device LED" on). Every
 //   programming mode, the gateway's as well, ends by itself after 4 minutes (vdev.c, PROG_US).
 //
-// Before the first download the gateway keeps what the console set (pair range, pair on|off) and a window of 180 s.
+// Before its first download the gateway does not bind from ETS: an address assignment on the line opens nothing
+// (pair.c, point 12). The pairing window (button S1, console) opens for 180 s; the range and "pair on|off" of the
+// console are kept until the download sets them.
 #include <stdio.h>
 #include <string.h>
 #include "driver/gpio.h"
@@ -99,6 +101,7 @@ static void push(const char *why)
     ia_str(lo, a);
     ia_str(hi, b);
     ia_str(s_ia, g);
+    pair_gw_loaded();
     pair_enable(s_binding);
     int r = pair_range(lo, hi);
     if (r) {   // the download was checked (gw_params_check); a new address of the gateway can still move it out
@@ -405,7 +408,9 @@ static void gw_task(void *arg)
     int64_t down_since = 0, status_t = 0;
     bool held = false, first = true;
     int n = 0;
+    wdt_watch();
     for (;;) {
+        wdt_feed();   // every 20 ms; a status round waits for the device server's lock at most
         int64_t now = esp_timer_get_time();
         bool down = gpio_get_level(BTN_PIN) == 0;
         if (down && !down_since) {

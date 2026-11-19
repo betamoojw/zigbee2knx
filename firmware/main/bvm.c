@@ -21,7 +21,11 @@
 #include "freertos/semphr.h"
 #include "berry.h"
 #include "be_gc.h"
+#include "be_exec.h"
+#include "be_mem.h"
 #include "app.h"
+#include "kgtjson.h"
+#include "tplmem.h"
 
 static const char *TAG = "bvm";
 
@@ -72,7 +76,7 @@ static const char BOOT_BE[] =
     "    end\n"
     "    p = nil\n"
     "    m = nil\n"
-    "    compile(b)()\n"
+    "    _kgt_behaviour()()\n"
     "    return nil\n"
     "end\n"
     // Is the model an instance reported one of those the template was made for? '1|44|model' or '0|44|model'; ''
@@ -143,8 +147,11 @@ static volatile uint32_t s_gc_us;
 // Only the Berry task touches these. Whatever a VM needs from C is fetched by the VM from inside the protected call:
 // a Berry API call that needs memory outside of one ends in abort() when there is none (be_exec.c, be_throw()).
 static const char *s_cur_line;       // the request line of the call that is running
-static uint8_t *s_payload;           // the verified payload on its way into a new VM
-static size_t s_plen;
+static uint8_t *s_payload;           // the verified payload on its way into a new VM, its behaviour unescaped in place
+static const char *s_beh;            // that behaviour inside s_payload (kgtjson.h), for _kgt_behaviour()
+static size_t s_blen;
+static char *s_rest;                 // the payload without its behaviour, for _kgt_payload()
+static size_t s_rlen;
 static int64_t s_deadline;           // 0: no call is running
 static bool s_stopped;               // the call that just ended was stopped for taking too long
 static uint32_t s_timeouts;
@@ -182,15 +189,43 @@ static int m_req(bvm *vm)
     be_return(vm);
 }
 
-static int m_payload(bvm *vm)   // once, inside _kgt_boot(); the C copy goes as soon as Berry has its own
+// once, inside _kgt_boot(): the payload without its behaviour ("behaviour":""); the C copy goes as soon as Berry has
+// its own
+static int m_payload(bvm *vm)
 {
-    if (!s_payload) {
+    if (!s_rest) {
         be_return_nil(vm);
     }
-    be_pushnstring(vm, (const char *)s_payload, s_plen);
+    be_pushnstring(vm, s_rest, s_rlen);
+    free(s_rest);
+    s_rest = NULL;
+    be_return(vm);
+}
+
+// once, inside _kgt_boot(): the behaviour compiled straight from the payload's buffer, which goes right after (the
+// compiler copies what it keeps). A failure goes on as Berry's compile() passes it on (be_baselib.c
+// raise_compile_error()), with what the failure left on the stack: an exception its value and message, out of memory
+// nothing (be_exec.c copy_exception()). Out of memory stays out of memory, so that the device server tries again
+// (vdev.c apply()).
+static int m_behaviour(bvm *vm)
+{
+    if (!s_beh) {
+        be_return_nil(vm);
+    }
+    int r = be_loadbuffer(vm, "template", s_beh, s_blen);
     free(s_payload);
     s_payload = NULL;
-    be_return(vm);
+    s_beh = NULL;
+    if (r == BE_OK) {
+        be_return(vm);
+    }
+    if (r == BE_EXCEPTION) {
+        be_pop(vm, 2);
+    } else if (r == BE_EXIT) {
+        be_pop(vm, 1);
+    }
+    be_throw(vm, r);
+    return 0;
 }
 
 // Called by the VM every 2^19 instructions: a call that does not come to an end is stopped. With be_exit() and not
@@ -278,6 +313,7 @@ static bvm *vm_new(void)
     be_regfunc(vm, "_now_ms", m_now_ms);
     be_regfunc(vm, "_req", m_req);
     be_regfunc(vm, "_kgt_payload", m_payload);
+    be_regfunc(vm, "_kgt_behaviour", m_behaviour);
     be_set_obs_hook(vm, obs);
     return vm;
 }
@@ -309,13 +345,13 @@ static size_t low_end(size_t before)
 }
 
 // On the Berry task: check the template embedded in a parameter segment and bring it up in a VM of its own.
-static int tpl_load_vm(tjob_t *j, size_t before, bool *fresh);
+static int tpl_load_vm(tjob_t *j, size_t *before, bool *fresh);
 
 static int tpl_load(tjob_t *j)
 {
     bool fresh = false;
     size_t before = low_begin();
-    int k = tpl_load_vm(j, before, &fresh);
+    int k = tpl_load_vm(j, &before, &fresh);
     size_t peak = low_end(before);
     if (k >= 2 && fresh) {
         bclass_t *c = &s_cls[k];
@@ -329,7 +365,7 @@ static int tpl_load(tjob_t *j)
     return k;
 }
 
-static int tpl_load_vm(tjob_t *j, size_t before, bool *fresh)
+static int tpl_load_vm(tjob_t *j, size_t *before, bool *fresh)
 {
     uint8_t *payload = NULL;
     size_t plen = 0;
@@ -356,19 +392,53 @@ static int tpl_load_vm(tjob_t *j, size_t before, bool *fresh)
         j->info->err = KNX_ERR_NO_RAM;
         return BVM_REFUSED;
     }
-    // Measured on 2026-11-13: the heap falls by 39.2 KB loading 3 KB of source and by 80.1 KB loading 17.9 KB,
-    // about 31 KB + 2.75 x source. An earlier estimate of six times the source asked far too much for a large
-    // template and too little for a small one. Refuse rather than run dry (see s_cur_line above), and leave
-    // the same 64 KB as before for Zigbee and the bus.
-    // A check before the load counts the heap of the VM the device gives up (free_extra) as free; the largest block
-    // it cannot predict, so a block that is too small refuses only if the VM given up could not make up for it.
-    size_t fr = heap_caps_get_free_size(MALLOC_CAP_8BIT) + j->free_extra;
-    size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    size_t want = 32 * 1024 + 3 * plen + 64 * 1024;
-    if (fr < want || (big < 2 * plen + 4096 && j->free_extra < 2 * plen + 4096)) {
+    // The behaviour compiles straight from this buffer, the rest of the payload goes to Berry as JSON (kgtjson.h)
+    size_t vs, ve;
+    if (kgtj_behaviour((const char *)payload, plen, &vs, &ve) != 0) {
         free(payload);
-        snprintf(j->why, j->wn, "not enough memory to load it: %u B free, largest block %u B, about %u B needed",
-                 (unsigned)fr, (unsigned)big, (unsigned)want);
+        snprintf(j->why, j->wn, "payload is not a kgt/1 template");
+        j->info->err = KNX_ERR_CONFIG;
+        return BVM_REFUSED;
+    }
+    size_t rlen = vs + (plen - ve);
+    // In place, in both paths, so that the check at LoadCompleted already sees an escape Berry does not take; the
+    // payload around it (the rest, below) stays as it is
+    long blen = kgtj_unescape((char *)payload + vs, ve - vs);
+    if (blen < 0) {
+        free(payload);
+        snprintf(j->why, j->wn, "the template's behaviour is no JSON string");
+        j->info->err = KNX_ERR_CONFIG;
+        return BVM_REFUSED;
+    }
+    // Refuse rather than run dry (see s_cur_line above): the heap a load takes in all and in one piece (tplmem.h).
+    size_t fr = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    tplmem_t m = tplmem_check(fr, big, plen, rlen, ve - vs, j->free_extra);
+    if (m != TPLMEM_OK) {
+        // Before refusing, collect in every VM (garbage counts as used, and freed garbage joins the free blocks around
+        // it) and look again. On this task, which alone touches the VMs. It matters most for the load itself, after
+        // the device gave up its VM: that heap lies scattered between the objects of the other VMs.
+        for (int i = 0; i < NSLOT; i++) {
+            if (s_cls[i].vm) {
+                be_gc_collect(s_cls[i].vm);
+            }
+        }
+        size_t fr2 = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+        size_t big2 = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+        ESP_LOGI(TAG, "template of %u B: largest block %u B, collecting in every VM gave %u B, largest block now %u B",
+                 (unsigned)plen, (unsigned)big, fr2 > fr ? (unsigned)(fr2 - fr) : 0, (unsigned)big2);
+        if (fr2 > fr) {
+            *before += fr2 - fr;   // what the collection gave back is not the new VM's (heap_load, the peak)
+        }
+        fr = fr2;
+        big = big2;
+        m = tplmem_check(fr, big, plen, rlen, ve - vs, j->free_extra);
+    }
+    if (m != TPLMEM_OK) {
+        free(payload);
+        snprintf(j->why, j->wn, "not enough memory: %u B free, largest block %u B, needs %u B and a block of %u B",
+                 (unsigned)(fr + j->free_extra), (unsigned)big, (unsigned)tplmem_want(plen),
+                 (unsigned)tplmem_block(rlen, ve - vs));
         j->info->err = KNX_ERR_NO_RAM;
         return BVM_REFUSED;
     }
@@ -376,6 +446,16 @@ static int tpl_load_vm(tjob_t *j, size_t before, bool *fresh)
         free(payload);
         return 0;
     }
+    char *rest = malloc(rlen);
+    if (!rest) {
+        free(payload);
+        snprintf(j->why, j->wn, "no memory (%u B) for the template's manifest", (unsigned)rlen);
+        j->info->err = KNX_ERR_NO_RAM;
+        return BVM_REFUSED;
+    }
+    memcpy(rest, payload, vs);   // "behaviour":"" and everything around it
+    memcpy(rest + vs, payload + ve, plen - ve);
+    be_os_mem_reset_peak();   // from here: the largest block Berry takes for this load (BE_OS_MEM_LARGEST)
     bvm *vm = vm_new();
     bool ok = load(vm, "prelude.be", prelude_be) == 0 && load(vm, "boot", BOOT_BE) == 0;
     j->info->err = KNX_ERR_SOFTWARE;   // until it is up: whatever fails from here is the Berry side
@@ -383,25 +463,39 @@ static int tpl_load_vm(tjob_t *j, size_t before, bool *fresh)
         snprintf(j->why, j->wn, "prelude does not load");
     } else {
         int top = be_top(vm);
-        s_payload = payload;   // _kgt_payload() takes it over inside the protected call
-        s_plen = plen;
+        s_payload = payload;   // _kgt_payload() and _kgt_behaviour() take them over inside the protected call
+        s_beh = (const char *)payload + vs;
+        s_blen = (size_t)blen;
+        s_rest = rest;
+        s_rlen = rlen;
         payload = NULL;
+        rest = NULL;
         s_stopped = false;
         s_deadline = esp_timer_get_time() + BOOT_US;
         be_getglobal(vm, "_kgt_boot");
         int e = be_pcall(vm, 0);
         s_deadline = 0;
-        free(s_payload);       // still here if the VM never got to ask for it
+        free(s_payload);       // still here if the VM never got to ask for them
         s_payload = NULL;
+        s_beh = NULL;
+        free(s_rest);
+        s_rest = NULL;
         if (e != 0) {
             ok = false;
             if (e == BE_EXIT && s_stopped) {
                 snprintf(j->why, j->wn, "the template's Berry source did not come to an end within %d s",
                          BOOT_US / 1000000);
+            } else if (e == BE_MALLOC_FAIL) {
+                snprintf(j->why, j->wn, "the heap ran out while the template loaded");
+                j->info->err = KNX_ERR_NO_RAM;   // the device server tries again, a few times (vdev.c apply())
+                j->info->ran_out = true;
             } else {
                 snprintf(j->why, j->wn, "the template's Berry source does not load (Berry error %d)", e);
             }
             fail(vm, "template", e, "_kgt_boot");
+            ESP_LOGW(TAG, "template of %u B: largest block %u B before, %u B needed, the largest Berry took %u B",
+                     (unsigned)plen, (unsigned)big, (unsigned)tplmem_block(rlen, ve - vs),
+                     (unsigned)be_os_mem_get(BE_OS_MEM_LARGEST));
         } else if (!be_isnil(vm, -1)) {   // _kgt_boot refuses it, e.g. a template for another radio
             ok = false;
             snprintf(j->why, j->wn, "%s", be_isstring(vm, -1) ? be_tostring(vm, -1) : "the template does not start");
@@ -413,7 +507,8 @@ static int tpl_load_vm(tjob_t *j, size_t before, bool *fresh)
             snprintf(j->why, j->wn, "helper does not load");
         }
     }
-    free(payload);
+    free(payload);   // still here if the prelude did not load
+    free(rest);
     if (!ok) {
         be_vm_delete(vm);
         return BVM_REFUSED;
@@ -429,12 +524,15 @@ static int tpl_load_vm(tjob_t *j, size_t before, bool *fresh)
     snprintf(c->digest, sizeof c->digest, "%s", j->info->digest);
     snprintf(c->fpr, sizeof c->fpr, "%s", j->info->fpr);
     be_gc_collect(vm);
-    c->heap_load = before - heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    c->heap_load = *before - heap_caps_get_free_size(MALLOC_CAP_8BIT);
     c->plen = plen;
     c->vm = vm;
     *fresh = true;
-    ESP_LOGI(TAG, "slot %d: template %s loaded, digest %s, signed by %s, %u B heap, Berry counts %u B", k, c->name,
-             c->digest, c->fpr, (unsigned)c->heap_load, (unsigned)be_gc_memcount(vm));
+    ESP_LOGI(TAG, "slot %d: template %s loaded, digest %s, signed by %s, %u B heap, Berry counts %u B; largest block "
+             "%u B before, %u B needed, the largest Berry took %u B (payload %u B, behaviour %u B)", k, c->name,
+             c->digest, c->fpr, (unsigned)c->heap_load, (unsigned)be_gc_memcount(vm), (unsigned)big,
+             (unsigned)tplmem_block(rlen, ve - vs), (unsigned)be_os_mem_get(BE_OS_MEM_LARGEST), (unsigned)plen,
+             (unsigned)(ve - vs));
     return k;
 }
 
@@ -526,10 +624,16 @@ static void bvm_task(void *arg)
     s_cls[0].src = dimmable_be;
     s_cls[1].src = white_spectrum_be;
     s_loaded = true;   // the built-in classes come up when a device needs them (builtin_up)
+    wdt_watch();
     xSemaphoreGive(s_done);
     breq_t rq;
     for (;;) {
-        xQueueReceive(s_q, &rq, portMAX_DELAY);
+        // Each request is one step for the task watchdog (a hook ends after CALL_US, a template after BOOT_US); while
+        // nothing comes, the wait has an end so that the task goes on feeding it
+        wdt_feed();
+        if (xQueueReceive(s_q, &rq, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            continue;
+        }
         if (rq.op == OP_GC) {   // collect in every VM, on this task's stack
             int64_t t0 = esp_timer_get_time();
             for (int k = 0; k < NSLOT; k++) {
@@ -594,6 +698,7 @@ static bool vcall(int k, const char *fmt, va_list ap)
     xSemaphoreTake(s_done, portMAX_DELAY);
     bool ok = s_ok;
     xSemaphoreGive(s_mx);
+    wdt_feed();   // a watched caller made a step: a group telegram to 32 devices is 32 of these
     s_cls[k].calls++;
     if (!ok) {
         s_cls[k].errs++;
@@ -651,6 +756,7 @@ int bvm_template(const uint8_t *seg, size_t n, kgt_info_t *info, char *why, size
     xSemaphoreTake(s_done, portMAX_DELAY);
     int r = s_job.result;
     xSemaphoreGive(s_mx);
+    wdt_feed();
     return r;
 }
 
@@ -670,6 +776,7 @@ int bvm_template_check(const uint8_t *seg, size_t n, size_t free_extra, kgt_info
     xSemaphoreTake(s_done, portMAX_DELAY);
     int r = s_job.result;
     xSemaphoreGive(s_mx);
+    wdt_feed();
     return r;
 }
 
@@ -719,6 +826,7 @@ int bvm_model_check(int k, int inst, char *model, size_t n, int *count)
     int r = s_job.result;
     *count = s_job.count;
     xSemaphoreGive(s_mx);
+    wdt_feed();
     return r;
 }
 
@@ -733,6 +841,7 @@ void bvm_keep(uint32_t mask)
     xQueueSend(s_q, &rq, portMAX_DELAY);
     xSemaphoreTake(s_done, portMAX_DELAY);
     xSemaphoreGive(s_mx);
+    wdt_feed();
 }
 
 const char *bvm_class_model(int k)

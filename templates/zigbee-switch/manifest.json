@@ -1,7 +1,7 @@
 {
   "schema": "knxgw-template/0",
   "id": "zigbee.class.switch",
-  "version": 3,
+  "version": 4,
   "title": "Zigbee switch as a KNX switching actuator",
   "radio": "zigbee",
   "match": {
@@ -236,10 +236,11 @@
     "application": {
       "name": "Zigbee switch",
       "number": 49155,
-      "version": 3,
+      "version": 4,
       "replaces": [
         1,
-        2
+        2,
+        3
       ],
       "mask": "MV-07B0",
       "order_info": "ZB-SWITCH"

@@ -69,6 +69,7 @@ static void os_mem_count(size_t n, bool ext, bool add)
     if (add) {
         *cur += n;
         s_os_mem[BE_OS_MEM_BLOCKS]++;
+        if (n > s_os_mem[BE_OS_MEM_LARGEST]) s_os_mem[BE_OS_MEM_LARGEST] = n;
         if (*cur > *peak) *peak = *cur;
         size_t total = s_os_mem[BE_OS_MEM_INT_BYTES] + s_os_mem[BE_OS_MEM_EXT_BYTES];
         if (total > s_os_mem[BE_OS_MEM_TOTAL_PEAK]) s_os_mem[BE_OS_MEM_TOTAL_PEAK] = total;
@@ -136,6 +137,7 @@ BERRY_API void be_os_mem_reset_peak(void)
     s_os_mem[BE_OS_MEM_INT_PEAK]   = s_os_mem[BE_OS_MEM_INT_BYTES];
     s_os_mem[BE_OS_MEM_EXT_PEAK]   = s_os_mem[BE_OS_MEM_EXT_BYTES];
     s_os_mem[BE_OS_MEM_TOTAL_PEAK] = s_os_mem[BE_OS_MEM_INT_BYTES] + s_os_mem[BE_OS_MEM_EXT_BYTES];
+    s_os_mem[BE_OS_MEM_LARGEST]    = 0;
 }
 
 /* from here on, every allocation in this file is counted */

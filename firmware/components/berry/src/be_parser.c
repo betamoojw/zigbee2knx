@@ -1826,10 +1826,25 @@ static void mainfunc(bparser *parser, bclosure *cl)
     match_token(parser, TokenEOS); /* skip EOS */
 }
 
+struct parse_main {
+    bparser *parser;
+    bclosure *cl;
+};
+
+static void parse_main(bvm *vm, void *data)
+{
+    struct parse_main *p = cast(struct parse_main*, data);
+    (void)vm;
+    scan_next_token(p->parser); /* scan first token */
+    mainfunc(p->parser, p->cl);
+}
+
 bclosure* be_parser_source(bvm *vm,
     const char *fname, breader reader, void *data, bbool islocal)
 {
     bparser parser;
+    struct parse_main pm;
+    int res;
     bclosure *cl = be_newclosure(vm, 0);
     parser.vm = vm;
     parser.finfo = NULL;
@@ -1838,8 +1853,16 @@ bclosure* be_parser_source(bvm *vm,
     var_setclosure(vm->top, cl);
     be_stackpush(vm);
     be_lexer_init(&parser.lexer, vm, fname, reader, data);
-    scan_next_token(&parser); /* scan first token */
-    mainfunc(&parser, cl);
+    pm.parser = &parser;
+    pm.cl = cl;
+    res = be_execprotected(vm, parse_main, &pm);
+    if (res) {
+        /* The lexer's buffer is no GC object: a failure that jumps past the end of the parse (out of memory most of
+           all; be_lexerror() frees it itself) would leave it behind. Freed here, then the failure goes on as before,
+           with what it left above the stack top (be_raise()). */
+        be_lexer_deinit(&parser.lexer);
+        be_throw(vm, res);
+    }
     be_lexer_deinit(&parser.lexer);
     be_global_release_space(vm); /* clear global space */
     be_stackpop(vm, 2); /* pop strtab */

@@ -12,6 +12,19 @@
 void app_heap(const char *phase);
 void console_start(void);
 
+// main.c: the task watchdog. This firmware starts it itself (sdkconfig: CONFIG_ESP_TASK_WDT_INIT=n), without the idle
+// task. A task that called wdt_watch() has to call wdt_feed() at least once every WDT_TIMEOUT_S, or the firmware
+// panics: coredump, restart. Watched: the device server, Berry, the link to the Zigbee devices, the binding and the
+// gateway's task; each feeds after every step of its own. A step takes a few seconds at the most: a template that
+// loads is stopped after 5 s, a Berry hook after 2 s, every wait for the Zigbee stack ends after 1 s (logs of
+// 2026-11-17: a template loaded in 0.35 s). The tasks that wait for the device server's lock wait for one of its steps:
+// a group telegram to 32 devices is one, with 32 hooks of 8 to 9 ms each in the logs of 2026-11-15.
+// wdt_feed() in a task that is not watched does nothing.
+#define WDT_TIMEOUT_S 60
+void wdt_start(void);   // first thing in app_main
+void wdt_watch(void);   // the calling task is watched from now on
+void wdt_feed(void);    // the calling task is alive
+
 // knx_link.c: NCN5130 on UART1, data link layer for several individual addresses. No address is set in the chip;
 // the host acknowledges from the lists the device server publishes, which start empty (then the link only listens).
 #define KNX_ACK_IA_MAX 64
@@ -160,7 +173,10 @@ void pair_zb_left(uint16_t short_addr, const uint8_t ieee[8]);
 // it, it is asked again when it shows up as a member; a leave indication or a new join ends that.
 void pair_removed(const uint8_t ieee[8]);
 void pair_zb_opened(uint8_t seconds);                  // the network opened without this firmware asking for it
+void pair_manual(int seconds);                         // console "join": whoever joins in these seconds stays
 void pair_enable(bool on);
+void pair_gw_loaded(void);                             // the gateway's own application is loaded: binding from ETS
+                                                       // may begin (until then an address assignment opens nothing)
 int  pair_range(uint16_t lo, uint16_t hi);             // individual addresses that belong to this gateway; 0: taken
 void pair_window(int seconds);                         // open the network; the first device that joins waits for ETS.
                                                        // 0 closes a window that is open.
@@ -172,11 +188,12 @@ void      zb_start(void);
 void      zb_print(void);
 esp_err_t zb_permit_join(uint8_t seconds);
 esp_err_t zb_permit_join_as(uint8_t seconds, bool own);   // own false: as if a device on the network had opened it
+bool      zb_up(void);   // the network is formed or restored: commands can go out
 bool      zb_factory_reset(void);   // erases the network and restarts; false: refused on this board (TULX32)
 bool      zb_tx_power(const int8_t *set, int8_t *now);   // set NULL: only read; false: the stack is not up
 // ZCL client from our endpoint to a device by short address; answers and reports show up in the log
 esp_err_t zb_onoff(uint16_t dst, uint8_t ep, int what);   // 0 off, 1 on, 2 toggle
-esp_err_t zb_level(uint16_t dst, uint8_t ep, uint8_t level, uint16_t tenths);   // Move to Level (with On/Off)
+esp_err_t zb_level(uint16_t dst, uint8_t ep, uint8_t level, uint16_t tenths, bool with_onoff);   // Move to Level
 esp_err_t zb_read(uint16_t dst, uint8_t ep, uint16_t cluster, const uint16_t *attrs, int n);
 esp_err_t zb_write_u8(uint16_t dst, uint8_t ep, uint16_t cluster, uint16_t attr, uint8_t type, uint8_t value);
 esp_err_t zb_write_u16(uint16_t dst, uint8_t ep, uint16_t cluster, uint16_t attr, uint8_t type, uint16_t value);
@@ -191,7 +208,7 @@ esp_err_t zb_level_move(uint16_t dst, uint8_t ep, bool up, uint8_t rate, bool wi
 esp_err_t zb_level_stop(uint16_t dst, uint8_t ep, bool with_onoff);
 esp_err_t zb_color_temp(uint16_t dst, uint8_t ep, uint16_t mired, uint16_t tenths);   // Move to Color Temperature
 esp_err_t zb_color_xy(uint16_t dst, uint8_t ep, uint16_t x, uint16_t y, uint16_t tenths);   // Move to Color
-esp_err_t zb_color_temp_move(uint16_t dst, uint8_t ep, int dir, uint16_t rate);   // dir > 0 warmer (more mired), < 0 cooler, 0 stop
+esp_err_t zb_color_temp_move(uint16_t dst, uint8_t ep, int dir, uint16_t rate, uint16_t min_mired, uint16_t max_mired);   // dir > 0 warmer (more mired), < 0 cooler, 0 stop; bounds 0: the lamp's
 esp_err_t zb_identify(uint16_t dst, uint8_t ep, uint16_t seconds);
 esp_err_t zb_leave(uint16_t short_addr, const uint8_t *ieee);   // ZDO Mgmt_Leave without rejoin; ieee NULL: all zero
 // the full interview (ep_pick.h): ZDO Active_EP_req and Simple_Desc_req, the answers go to zlink_disc_eps/_desc
@@ -238,6 +255,7 @@ typedef struct {
     uint32_t us;                           // what the checks took
     char fpr[17], digest[17];              // signing key; content digest (SHA-256 of the payload, first 8 octets)
     uint8_t err;                           // refused: KNX_ERR_* for the load state Error (PID 28)
+    bool ran_out;                          // ... KNX_ERR_NO_RAM because the load itself ran out of memory, not the check
 } kgt_info_t;
 enum { KGT_OK = 0, KGT_NONE = 1, KGT_REFUSED = -1 };
 // Parameter segment -> payload on the heap (the caller frees it). KGT_NONE: no trailer, a product without a

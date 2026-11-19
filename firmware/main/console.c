@@ -80,6 +80,9 @@ static int c_join(int argc, char **argv)
         return 1;
     }
     bool own = !(argc > 2 && strcmp(argv[2], "foreign") == 0);   // foreign: test of the path that closes it again
+    if (own) {   // by hand: whoever joins meanwhile stays (pair.c asks any other device that joins to leave)
+        pair_manual(s);
+    }
     esp_err_t e = zb_permit_join_as((uint8_t)s, own);
     printf("join %d s%s: %s\n", s, own ? "" : ", as if a device on the network had asked", esp_err_to_name(e));
     return 0;
@@ -133,18 +136,37 @@ static int c_switch(int argc, char **argv)
     return 0;
 }
 
-// level ADDR L [tenths] [ep]
+// move ADDR up|down|stop [rate] [onoff]: Level Move or Stop, with On/Off if the last word is onoff (bench tests)
+static int c_move(int argc, char **argv)
+{
+    uint16_t a;
+    int rate = 50;
+    bool onoff = argc > 3 && strcmp(argv[argc - 1], "onoff") == 0;
+    int n = onoff ? argc - 1 : argc;
+    bool stop = n > 2 && strcmp(argv[2], "stop") == 0, up = n > 2 && strcmp(argv[2], "up") == 0;
+    if (n < 3 || !parse_u16(argv[1], &a) || !(stop || up || strcmp(argv[2], "down") == 0) ||
+        (n > 3 && !parse_int(argv[3], 1, 254, &rate))) {
+        printf("move <short address> up|down|stop [rate 1..254, default 50] [onoff]\n");
+        return 1;
+    }
+    esp_err_t e = stop ? zb_level_stop(a, 1, onoff) : zb_level_move(a, 1, up, (uint8_t)rate, onoff);
+    printf("move 0x%04x %s%s: %s\n", a, argv[2], onoff ? " with On/Off" : "", esp_err_to_name(e));
+    return 0;
+}
+
+// level ADDR L [tenths] [ep]: Move to Level with On/Off; mtl: the same without On/Off
 static int c_level(int argc, char **argv)
 {
     uint16_t a;
     int l, t = 5, ep = ep_arg(argc, argv, 4);
+    bool onoff = strcmp(argv[0], "mtl") != 0;
     if (argc < 3 || !parse_u16(argv[1], &a) || !parse_int(argv[2], 0, 254, &l) ||
         (argc > 3 && !parse_int(argv[3], 0, 0xfffe, &t)) || ep < 0) {
-        printf("level <short address> <0..254> [transition in 1/10 s, default 5] [ep]\n");
+        printf("%s <short address> <0..254> [transition in 1/10 s, default 5] [ep]\n", argv[0]);
         return 1;
     }
-    printf("level 0x%04x ep %d -> %d in %d/10 s: %s\n", a, ep, l, t,
-           esp_err_to_name(zb_level(a, (uint8_t)ep, (uint8_t)l, (uint16_t)t)));
+    printf("%s 0x%04x ep %d -> %d in %d/10 s: %s\n", argv[0], a, ep, l, t,
+           esp_err_to_name(zb_level(a, (uint8_t)ep, (uint8_t)l, (uint16_t)t, onoff)));
     return 0;
 }
 
@@ -546,6 +568,8 @@ void console_start(void)
     reg("off", "off <short address> [ep]: ZCL Off", c_switch);
     reg("toggle", "toggle <short address> [ep]: ZCL Toggle", c_switch);
     reg("level", "level <short address> <0..254> [1/10 s] [ep]: Move to Level with On/Off", c_level);
+    reg("move", "move <short address> up|down|stop [rate] [onoff]: Level Move or Stop, with On/Off if onoff", c_move);
+    reg("mtl", "mtl <short address> <0..254> [1/10 s] [ep]: Move to Level without On/Off, also while off (ExecuteIfOff)", c_level);
     reg("rd", "rd <short address> <cluster> <attr>[,attr...] [ep]: read attributes", c_rd);
     reg("basic", "basic <short address> [ep]: manufacturer, model, date code, sw build", c_basic);
     reg("zlink", "zlink <inst 100..> <short address> [ep] [class 0|1]: link a Berry instance to a device", c_zlink);
