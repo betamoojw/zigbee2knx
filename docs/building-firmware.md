@@ -1,7 +1,7 @@
 # Building the firmware
 
 The firmware is the ESP-IDF project in `firmware/`. It is built with ESP-IDF 6.0.1; the component manager fetches
-esp-zigbee-lib 2.0.1 (`firmware/main/idf_component.yml`, pinned in `firmware/dependencies.lock`). The Berry VM is part
+esp-zigbee-lib 2.1.0 (`firmware/main/idf_component.yml`, pinned in `firmware/dependencies.lock`). The Berry VM is part
 of the tree (`firmware/components/berry`), and the build embeds `berry/prelude.be` and the two light classes from
 `templates/`, so build from a checkout of the whole repository.
 

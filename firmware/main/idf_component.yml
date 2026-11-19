@@ -1,5 +1,6 @@
-## Pinned to 2.0.1. 2.1.x removes joiners without TCLK exchange; which one the firmware takes is decided by a test
-## with the LED1934G3.
+## Pinned to 2.1.0 (from 2.0.1): it fixes the trust center's handling of a device's own link key on a TC rejoin,
+## short addresses that were reserved or the coordinator's own, and leaks around ZDO and groupcast frames. 2.1.0
+## removes a joiner without a TC link key exchange unless told otherwise; zb.c keeps such devices, as 2.0.x did.
 dependencies:
-  espressif/esp-zigbee-lib: "==2.0.1"
+  espressif/esp-zigbee-lib: "==2.1.0"
   idf: ">=6.0.0"

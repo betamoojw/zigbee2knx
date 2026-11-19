@@ -472,6 +472,7 @@ void pair_gw_loaded(void) { g_pair_loaded++; }
 bool pair_is_open(void) { return g_pair_open; }
 static int g_zl_unavailable;
 int zlink_unavailable(void) { return g_zl_unavailable; }
+bool zb_network_lost(void) { return false; }
 int bvm_vm_count(void) { return 2; }
 esp_err_t gpio_config(const gpio_config_t *c) { (void)c; return ESP_OK; }
 esp_err_t gpio_set_level(gpio_num_t pin, uint32_t level) { (void)pin; (void)level; return ESP_OK; }
@@ -490,6 +491,7 @@ bool zb_tx_power(const int8_t *set, int8_t *now) { (void)set; (void)now; return 
 void zb_print(void) {}
 esp_err_t zb_permit_join_as(uint8_t s, bool own) { (void)s; (void)own; return ESP_OK; }
 bool zb_factory_reset(void) { return false; }
+bool zb_form_new(void) { return false; }
 esp_err_t zb_onoff(uint16_t dst, uint8_t ep, int what) { (void)dst; (void)ep; (void)what; return ESP_OK; }
 esp_err_t zb_level(uint16_t dst, uint8_t ep, uint8_t level, uint16_t t, bool w) { (void)dst; (void)ep; (void)level; (void)t; (void)w; return ESP_OK; }
 esp_err_t zb_level_move(uint16_t dst, uint8_t ep, bool up, uint8_t rate, bool w) { (void)dst; (void)ep; (void)up; (void)rate; (void)w; return ESP_OK; }

@@ -22,7 +22,7 @@ libraries that are available in source form, as well as that of the covered work
 | [Berry](https://github.com/berry-lang/berry) 1.1.0 | `firmware/components/berry/`, with an ESP-IDF port and an allocation counter added | MIT, Copyright (c) 2018-2020 Guan Wenliang, some files also Stephan Hadinger (see their headers); text in `firmware/components/berry/LICENSE` |
 | [zigbee-herdsman-converters](https://github.com/Koenkk/zigbee-herdsman-converters) 26.57.0 | `distill/data/ikea-26.57.0.jsonl` (device definitions as the library outputs them); the model tables in `templates/` are derived from them | MIT, Copyright (c) 2018 Koen Kanters; text below |
 | [ESP-IDF](https://github.com/espressif/esp-idf) 6.0 | build dependency, not part of this repository | Apache-2.0; some libraries in object code form |
-| [esp-zigbee-lib](https://components.espressif.com/components/espressif/esp-zigbee-lib) 2.0.1 | fetched by the ESP-IDF component manager at build time | Apache-2.0; libraries in object code form |
+| [esp-zigbee-lib](https://components.espressif.com/components/espressif/esp-zigbee-lib) 2.1.0 | fetched by the ESP-IDF component manager at build time | Apache-2.0; libraries in object code form |
 | [ESP Web Tools](https://github.com/esphome/esp-web-tools) 10.5.2 | fetched by `.github/workflows/pages.yml` (checksum pinned) and served with the web installer page, not part of this repository | Apache-2.0; text served next to it |
 
 Firmware images built from this repository contain Berry, ESP-IDF and esp-zigbee-lib.

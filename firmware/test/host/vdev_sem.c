@@ -696,7 +696,7 @@ int main(void)
         g_tpl_mode = 1;
         tick_for(31000000);
         ck(!s_d[a].fault && s_d[a].k == 2, "memory there again: the next attempt brings the device up");
-        // a load that runs out of memory itself (review G, round 2): three attempts, then a download or a start
+        // a load that runs out of memory itself (found in a review): three attempts, then a download or a start
         unsigned long t0 = g_tpl_calls;
         g_tpl_mode = 4;
         load4(a, s1, n1);
@@ -1094,7 +1094,7 @@ int main(void)
     }
     // ... and the first value of a status object after a start goes on the bus as well, a little later and once; so does
     // what a device holds after its restart (the end of its download, which may have given the object another group
-    // address); one device after the other (review A, N2)
+    // address); one device after the other (found in a review)
     fresh();
     {
         int a = vdev_add(0x1234, 1, 0, NULL), b = vdev_add(0x2345, 1, 0, NULL);

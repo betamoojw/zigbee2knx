@@ -397,7 +397,7 @@ static bool zcl_cmd(zlink_t *l, const char *key, const char *val, uint16_t t, es
 // One Zigbee2MQTT property set by the class -> one ZCL command, in the Berry task while the hook runs.
 // A command the stack does not take (its lock busy for 1 s, no buffer, any other error of the library) goes out once
 // more after RETRY_MS; refused again, it counts as a failed send (count_fail), so that a lamp left on after a central
-// command shows up as a fault instead of nowhere (review 2026-11-17, A M4). The retry waits here, in the hook: the
+// command shows up as a fault instead of nowhere (found in a review). The retry waits here, in the hook: the
 // commands of a device keep their order, and a burst that ran the stack out of buffers pauses for it. While the stack
 // is not up nothing goes out at all; that is no failure of the device and is not counted.
 #define RETRY_MS 200

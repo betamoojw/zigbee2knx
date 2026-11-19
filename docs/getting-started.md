@@ -43,13 +43,16 @@ had 1 to 48.
 | 9 | Device classes loaded | 5.010 | |
 | 10 | Device storage used | 5.001 | |
 | 11 | Last message | 16.001 | `<address> <code>`, see below |
-| 12 | Fault | 1.005 | 1 while an application is in error or not running, while a Zigbee device does not answer, or after a device was refused for want of a place |
+| 12 | Fault | 1.005 | 1 while an application is in error or not running, while a Zigbee device does not answer, after a device was refused for want of a place, or while the Zigbee network is gone and was not formed anew |
 
 Codes of the last message: `OFF` the Zigbee device does not answer, `ON` it answers again, `MODEL` its model is not
 in the class's list (it runs with the class defaults), `DEL` the device was removed, `FULL` refused for want of a
 place, `RAM`, `CRC`, `CONF`, `SW`, `LOAD` a download the gateway could not take (ETS then reports the download as
 failed), `FLASH` a record does not get into the flash, `DUP` an individual address another of the gateway's devices
-already has was refused, `GA` more group addresses than the gateway can acknowledge.
+already has was refused, `GA` more group addresses than the gateway can acknowledge, `NET` the gateway started without
+its Zigbee network while Zigbee devices are paired and did not form a new one, because a new network would take every
+device away. It decides again at the next start. `zbform yes` at the console forms one on purpose, then each device
+has to be reset and join anew; `zbform yes` has run in the host tests only, not yet on a device.
 
 ## Pairing a Zigbee device
 
@@ -102,9 +105,10 @@ tested yet; if one fails, set the parameter to standard frames.
 
 ## Known limitations
 
+- 0.6.2 has not run with ETS (0.6.1 and earlier have), and on the TULX32 not with a Zigbee device.
 - TULX32: ETS itself, pairing from ETS, the button S1 and the way back through its recovery system have not been
-  tried on it, and its bus current with Zigbee running has not been measured. The firmware caps its Zigbee transmit power at 18 dBm; at 20 dBm the bus supply did
-  not hold while the radio sent.
+  tried on it, and its bus current with Zigbee running has not been measured. The firmware caps its Zigbee transmit
+  power at 18 dBm; at 20 dBm the bus supply did not hold while the radio sent.
 - Loading a new version of a device class while another device still runs the old one needs memory for both. With
   three classes loaded this may not fit: the device updated last then does not run, and the gateway counts it in its
   fault object (worked out from the code, not yet seen on a device).

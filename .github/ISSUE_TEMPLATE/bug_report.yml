@@ -21,8 +21,8 @@ body:
     id: firmware
     attributes:
       label: Firmware version
-      description: "The release, or the version in the line the console prints after a start: `zigbee2knx 0.6.1, IDF ...`"
-      placeholder: "0.6.1"
+      description: "The release, or the version in the line the console prints after a start: `zigbee2knx 0.6.2, IDF ...`"
+      placeholder: "0.6.2"
     validations:
       required: true
   - type: input

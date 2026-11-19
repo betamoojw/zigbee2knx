@@ -238,7 +238,8 @@ static int fault_now(int free_places)
     if (free_places > 0) {
         s_full_refused = false;
     }
-    return vdev_faulty() > 0 || zlink_unavailable() > 0 || vdev_store_failing() || (s_full_refused && free_places == 0);
+    return vdev_faulty() > 0 || zlink_unavailable() > 0 || vdev_store_failing() || zb_network_lost() ||
+           (s_full_refused && free_places == 0);
 }
 
 void gw_note(int kind, uint16_t ia, uint8_t err, const char *why)
@@ -307,6 +308,7 @@ static void note_text(int kind, uint16_t ia, uint8_t err, char out[NOTE_LEN + 1]
                        : kind == GW_NOTE_STORE   ? "FLASH"
                        : kind == GW_NOTE_DUP     ? "DUP"
                        : kind == GW_NOTE_GROUPS  ? "GA"
+                       : kind == GW_NOTE_NET     ? "NET"
                                                  : err_code(err);
     if (ia == 0xFFFF) {
         snprintf(out, NOTE_LEN + 1, "%s", code);

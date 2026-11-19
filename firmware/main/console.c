@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (c) 2026 Dirk Tostmann
-// Console on USB-Serial-JTAG (TUL32) or UART0 (TULX32). Commands: heap, tasks, zb, join [s], zbreset yes, knx, ack,
-// stat, gc; Zigbee devices: on|off|toggle ADDR, level ADDR L, rd ADDR CL ATTR, basic ADDR; Berry <-> device: zlink INST
-// ADDR, kw INST KO HEX, links; KNX devices: vdev, prog, ia, dump, apdu, gw, pair, ... The measuring commands of the
-// first bench firmware (dev N, sim on|off, gcrate N) are in the TUL32 build only.
+// Console on USB-Serial-JTAG (TUL32) or UART0 (TULX32). Commands: heap, tasks, zb, join [s], zbreset yes, zbform yes,
+// knx, ack, stat, gc; Zigbee devices: on|off|toggle ADDR, level ADDR L, rd ADDR CL ATTR, basic ADDR; Berry <-> device:
+// zlink INST ADDR, kw INST KO HEX, links; KNX devices: vdev, prog, ia, dump, apdu, gw, pair, ... The measuring commands
+// of the first bench firmware (dev N, sim on|off, gcrate N) are in the TUL32 build only.
 // Every number is checked whole: atoi() made 0 of a typo, and "vdev del x yes" removed device 0.
 #include <stdio.h>
 #include <stdlib.h>
@@ -98,6 +98,22 @@ static int c_zbreset(int argc, char **argv)
         printf("zbreset: not on this board: the Zigbee data shares nvs with the recovery system (board.h)\n");
         return 1;
     }
+    return 0;
+}
+
+// zbform yes: form a new Zigbee network when the gateway refused to (the stack lost the one it had, devices paired)
+static int c_zbform(int argc, char **argv)
+{
+    if (argc < 2 || strcmp(argv[1], "yes") != 0) {
+        printf("zbform yes: forms a new Zigbee network when the gateway refused to after a start without its network;\n"
+               "every paired Zigbee device then has to be reset and join anew\n");
+        return 1;
+    }
+    if (!zb_form_new()) {
+        printf("zbform: the network is there, nothing to form (zbreset yes erases it on the TUL32)\n");
+        return 1;
+    }
+    printf("zbform: forming a new network\n");
     return 0;
 }
 
@@ -564,6 +580,8 @@ void console_start(void)
     reg("zb", "Zigbee status; zb tx [dBm]: TX power", c_zb);
     reg("join", "join [s] [foreign]: permit joining for s seconds (default 180, 0 closes); foreign: as a device would", c_join);
     reg("zbreset", "zbreset yes: erase the Zigbee network and restart", c_zbreset);
+    reg("zbform", "zbform yes: form a new Zigbee network after the gateway refused to (start without its network)",
+        c_zbform);
     reg("on", "on <short address> [ep]: ZCL On", c_switch);
     reg("off", "off <short address> [ep]: ZCL Off", c_switch);
     reg("toggle", "toggle <short address> [ep]: ZCL Toggle", c_switch);

@@ -318,6 +318,7 @@ static struct {
 } s_tref[NDEV];                    // the template part the stored record of each slot names (len 0: none); from the
                                    // start on, restored or not, then kept up with every record written or erased
 static bool s_swept;               // every record was read at the start: a part no record names may go from now on
+static volatile bool s_loaded;     // the records are read (or there is no storage to read them from): zb.c may decide
 
 // The record of slot i: "v<i>", the gateway's "vgw". Earlier firmware gave the gateway "v8", after the 8 slots it
 // had; with more slots that is a virtual device's key (gw_key_move()).
@@ -1294,7 +1295,7 @@ static void apply(vdev_t *d)
             d->tpl = 2;
             // No memory says nothing about the template: it is tried again, while a refused content waits for ETS. A
             // load that ran out of memory itself only APPLY_OOM_TRIES times: a template that runs the heap dry would do
-            // it every 30 s next to Zigbee and the bus (review G, round 2); a download or a start tries anew
+            // it every 30 s next to Zigbee and the bus (found in a review); a download or a start tries anew
             bool again = ti.err == KNX_ERR_NO_RAM && (!ti.ran_out || ++d->oom_tries < APPLY_OOM_TRIES);
             char after[96] = "";
             if (again) {
@@ -2354,7 +2355,7 @@ static void ko_out(int inst, int ko, const uint8_t *v, int n, bool initial, bool
     memcpy(d->ko[ko].v, v, (size_t)n);
     if (initial) {
         // The value as linking found it is kept for a read. Its first one since the start or the device's restart goes
-        // on the bus as well, a little later (review A, N2); the gateway's own objects tell themselves (gw.c).
+        // on the bus as well, a little later (found in a review); the gateway's own objects tell themselves (gw.c).
         if (status && !d->ko[ko].told && !is_gw(d)) {
             hold(d, ko);
         }
@@ -2764,6 +2765,7 @@ void vdev_start(void)
     if (s_nvs_ok) {
         ts_sweep();
     }
+    s_loaded = true;
     xSemaphoreGive(s_mx);
     // Then one device after the other, the lock free in between for the task
     for (int i = 0; i < VDEV_MAX; i++) {
@@ -3233,6 +3235,11 @@ int vdev_store_pct(void)
         return -1;
     }
     return (int)((st.used_entries * 100 + usable / 2) / usable);
+}
+
+bool vdev_loaded(void)
+{
+    return s_loaded;
 }
 
 void vdev_counts(int *bound, int *waiting)

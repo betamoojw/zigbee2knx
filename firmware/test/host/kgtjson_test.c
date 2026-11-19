@@ -4,7 +4,7 @@
 // braces and quotes in them, blanks) and unescaped in place as Berry's json.load() does it, its edges included (every
 // \u on its own, 0x7F as two octets). Ends with "kgtjson checks: N passed, M failed" and exits non-zero on a failure.
 // That the four templates given out come out byte for byte as Python's json.loads() reads them was checked on
-// 2026-11-19 with the load sequence of bvm.c on the PC (review G).
+// 2026-11-19 with the load sequence of bvm.c on the PC (in a review).
 #include <stdio.h>
 #include <string.h>
 #include "kgtjson.h"

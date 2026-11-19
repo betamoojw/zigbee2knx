@@ -8,10 +8,11 @@
 // by 80.1 KB loading 17.9 KB, about 31 KB + 2.75 x payload; on top of that the 64 KB left for Zigbee and the bus.
 // Measured on 2026-11-19 on the C6 with the load of today (a development build of 0.6.1, the peak tpl_load() logs):
 // 29680 B for the switch (3229 B payload), 58304 B for the dimmable light (11282 B), 91684 B and 92224 B for the white
-// spectrum light v5 and v6 (19860 B, 20124 B). The rule's 32 KB + 3 x payload is then 916 B above the peak of C002 v6,
-// and the peak grows by about 3.8 B per octet of payload between the two light classes: from about 21 KB of payload on
-// it would take some of the 64 KB reserve (review G, round 3). No template given out comes near that; a larger one
-// asks for the rule to follow the measurement (e.g. 16 KB + 4 x payload).
+// spectrum light v5 and v6 (19860 B, 20124 B). Between the two light classes the peak grows by about 3.8 B per octet
+// of payload. The rule of 0.6.1, 32 KB + 3 x payload, was then 916 B above the peak of C002 v6, and from about 21 KB of
+// payload on a load would have taken some of the 64 KB reserve. Since 2026-11-19 (after 0.6.1) the load counts the
+// larger of 32 KB + 3 x payload and 16 KB + 4 x payload: the same up to 16 KB of payload, 4 B per octet above it
+// (C002 v6: 96880 B against the 92224 B measured). Above 20 KB of payload that is extrapolated from three points.
 //
 // In one piece, since 2026-11-19: the behaviour compiles straight from the payload's own buffer, which exists before
 // the check (kgtjson.h, bvm.c m_behaviour()). New after the check are
@@ -40,9 +41,15 @@
 
 typedef enum { TPLMEM_OK, TPLMEM_TOTAL, TPLMEM_BLOCK } tplmem_t;
 
+static inline size_t tplmem_load(size_t plen)    // heap the load itself takes at its peak (the lines above)
+{
+    size_t small = 32 * 1024 + 3 * plen, large = 16 * 1024 + 4 * plen;
+    return small > large ? small : large;
+}
+
 static inline size_t tplmem_want(size_t plen)    // free heap a load takes, the reserve for Zigbee and the bus included
 {
-    return 32 * 1024 + 3 * plen + 64 * 1024;
+    return tplmem_load(plen) + 64 * 1024;
 }
 
 // largest free block a load takes; rlen: the payload without its behaviour, blen: the behaviour as the payload

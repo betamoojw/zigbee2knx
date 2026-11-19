@@ -46,14 +46,14 @@
 //  12. Binding from ETS waits for the gateway's own application: until ETS has loaded it once (its parameters say
 //      whether to bind and which addresses), an address assignment on the line opens nothing. A gateway fresh from the
 //      box would otherwise open its network for every assignment in 15.15.1 .. 15.15.48, and two of them on one line
-//      both (review A, N10). The pairing window (point 7) does not wait for it; a device that came through it waits
+//      both (found in a review). The pairing window (point 7) does not wait for it; a device that came through it waits
 //      for an address until the gateway is loaded.
 //  13. A device that joins while neither a series nor the window holds the network open is asked to leave, with a
 //      warning, and the network is closed once more: a router let it in. A device that has just joined opens the
 //      network for 180 s after its key exchange (point 6); closing it here reaches the routers as well (zb.c:
 //      ezb_bdb_close_network() broadcasts a Mgmt_Permit_Joining_req with duration 0 to all routers, as the disassembly
 //      of esp-zigbee-lib 2.0.1 shows; not seen on the air). Before, such a device stayed a member nobody served
-//      (review A, M1). The console's "join" opens the network by hand: whoever joins while it holds it open stays.
+//      (found in a review). The console's "join" opens the network by hand: whoever joins while it holds it open stays.
 //
 // The read is not addressed to us: every address assignment on the line looks the same. The range is what ties it to
 // this gateway; without a target inside it nothing opens. ETS does not say which product it is about to load, so the

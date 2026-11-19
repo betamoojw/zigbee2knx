@@ -171,7 +171,7 @@ def main():
     ops = vm.call("dp_event", inst=54, ch=1, key="state", value="ON", initial=False)
     check("the wait ends with the 1 s after the command: a later On without a level report -> KO5 from what is known",
           status(ops) == [(4, "01", False), (5, "43", False)], status(ops))
-    # review F, F1: the lamp's On report is lost, the gateway reads back the level, then On/Off (zlink.c readback); the
+    # found in a review: the lamp's On report is lost, the gateway reads back the level, then On/Off (zlink.c readback); the
     # level read after the command is new even when it is not the target, so the On that follows reports it
     lamp(vm, 55, brightness=67, state="OFF")
     vm.call("knx_write", inst=55, ko=3, raw="bf")                    # 75 % = 190

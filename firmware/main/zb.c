@@ -7,6 +7,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -16,6 +17,7 @@
 #include "ezbee/zha.h"
 #include "app.h"
 #include "board.h"
+#include "zbstart.h"
 
 static const char *TAG = "zb";
 // Openings of the network this firmware asked for and has not seen confirmed yet, and the duration it asked for.
@@ -31,6 +33,13 @@ static volatile bool s_up;
 static volatile uint32_t s_annce, s_auth, s_leave, s_update;
 static esp_timer_handle_t s_retry;
 static TaskHandle_t s_task;
+// A start without the network the stack had (zbstart.h): with Zigbee devices paired no new one is formed, s_lost tells
+// the gateway's fault object. A new one only on request: "zbform yes" (s_form_now) or "zbreset yes", which sets the
+// mark in RTC memory before its restart (survives a software restart, not a power cut).
+#define ZB_FORM_MAGIC 0x5a42464fu
+static volatile bool s_lost, s_form_now;
+static esp_timer_handle_t s_decide;
+RTC_NOINIT_ATTR static uint32_t s_form_asked;
 
 static void form_cb(void *ctx)
 {
@@ -42,6 +51,44 @@ static void retry_fire(void *arg)
 {
     (void)arg;
     esp_zigbee_task_queue_post(form_cb, NULL);
+}
+
+static void decide_cb(void *ctx)   // in the Zigbee task: the stack started without a network (zbstart.h)
+{
+    (void)ctx;
+    int bound = 0, waiting = 0;
+    bool loaded = vdev_loaded();
+    if (loaded) {
+        vdev_counts(&bound, &waiting);
+    }
+    bool asked = s_form_now || s_form_asked == ZB_FORM_MAGIC;
+    switch (zbstart_decide(false, loaded, bound + waiting, asked)) {
+    case ZBSTART_WAIT:
+        esp_timer_start_once(s_decide, 500000);
+        return;
+    case ZBSTART_REFUSE:
+        if (!s_lost) {
+            s_lost = true;
+            ESP_LOGE(TAG, "the Zigbee network is gone (the stack starts as new) while %d Zigbee devices are paired: "
+                     "no new network is formed, it would take every device away. \"zbform yes\" at the console "
+                     "forms one; each device then has to be reset and join anew", bound + waiting);
+            gw_note(GW_NOTE_NET, 0xFFFF, 0, "Zigbee network gone, none formed");
+        }
+        return;
+    default:
+        s_lost = false;
+        s_form_now = false;
+        s_form_asked = 0;
+        ESP_LOGI(TAG, "forming a network%s", asked ? " (asked for)" : "");
+        ezb_bdb_start_top_level_commissioning(EZB_BDB_MODE_NETWORK_FORMATION);
+        return;
+    }
+}
+
+static void decide_fire(void *arg)
+{
+    (void)arg;
+    esp_zigbee_task_queue_post(decide_cb, NULL);
 }
 
 // The TX power cap of the board (board.h: BOARD_ZB_TX_DBM; the TULX32 runs from the bus). Set when the stack starts,
@@ -279,8 +326,8 @@ static bool on_signal(const ezb_app_signal_t *sig)
             ESP_LOGI(TAG, "network restored: channel %u, PAN 0x%04x", ezb_get_current_channel(), ezb_get_panid());
             tx_cap("network restored");
         } else {
-            ESP_LOGI(TAG, "%s (status %u), forming a network", ezb_app_signal_to_string(t), st);
-            ezb_bdb_start_top_level_commissioning(EZB_BDB_MODE_NETWORK_FORMATION);
+            ESP_LOGI(TAG, "%s (status %u): no network restored", ezb_app_signal_to_string(t), st);
+            decide_cb(NULL);
         }
         return true;
     }
@@ -288,6 +335,7 @@ static bool on_signal(const ezb_app_signal_t *sig)
         const ezb_bdb_signal_simple_params_t *s = p;
         if (s && s->status == EZB_BDB_STATUS_SUCCESS) {
             s_up = true;
+            s_lost = false;
             ESP_LOGI(TAG, "formed: channel %u, PAN 0x%04x", ezb_get_current_channel(), ezb_get_panid());
             tx_cap("network formed");
             app_heap("zb_formed");
@@ -310,7 +358,9 @@ static bool on_signal(const ezb_app_signal_t *sig)
         const ezb_zdo_signal_device_authorized_params_t *a = p;
         s_auth++;
         eui_str(&a->device_addr, eui);
-        ESP_LOGI(TAG, "device authorized: 0x%04x %s type %d status %d", a->short_addr, eui, (int)a->type,
+        static const char *const auth_type[] = {"LEGACY", "TCLK", "DLK"};   // EZB_ZDO_AUTH_TYPE_* in order
+        ESP_LOGI(TAG, "device authorized: 0x%04x %s type %s status %d", a->short_addr, eui,
+                 (unsigned)a->type < sizeof auth_type / sizeof auth_type[0] ? auth_type[a->type] : "?",
                  (int)a->status);
         pair_zb_authorized(a->short_addr, a->status == 0);
         return false;
@@ -374,6 +424,17 @@ static void zb_task(void *arg)
     cfg.platform_config.radio_config.radio_mode = ESP_ZIGBEE_RADIO_MODE_NATIVE;
     ESP_ERROR_CHECK(esp_zigbee_init(&cfg));
     app_heap("zb_init");
+    // From esp-zigbee-lib 2.1.0 the trust center removes, about 15 s after it joined, a device that does not exchange a
+    // TC link key (devices before Zigbee 3.0), unless told otherwise; 2.0.x kept them. Keep them: devices from before
+    // Zigbee 3.0 join this way. Rejoins with the well-known key stay at the library's default (not allowed).
+    ezb_err_t te = ezb_secur_set_tclk_exchange_required(false);
+    if (te == EZB_ERR_NONE) {
+        ESP_LOGI(TAG, "trust center: joiners without a TC link key exchange stay; rejoin with the well-known key %s",
+                 ezb_secur_tcpol_get_allow_rejoins_with_well_known_key() ? "allowed" : "not allowed");
+    } else {
+        ESP_LOGW(TAG, "trust center: keeping joiners without a TC link key exchange refused (%d): they are removed",
+                 (int)te);
+    }
     // sized for 48 devices; 0 keeps the library default
     ezb_mem_config_t mem = {
         .buffer_pool_size = 0,
@@ -403,6 +464,8 @@ void zb_start(void)
 {
     const esp_timer_create_args_t a = {.callback = retry_fire, .name = "zbretry"};
     ESP_ERROR_CHECK(esp_timer_create(&a, &s_retry));
+    const esp_timer_create_args_t b = {.callback = decide_fire, .name = "zbdecide"};
+    ESP_ERROR_CHECK(esp_timer_create(&b, &s_decide));
     xTaskCreate(zb_task, "zigbee", 6144, NULL, 5, &s_task);
 }
 
@@ -606,6 +669,9 @@ void zb_print(void)
            s_up ? "up" : "not up", ch, pan, sa, tx, ls, (unsigned long)s_annce, (unsigned long)s_auth,
            (unsigned long)s_update, (unsigned long)s_leave,
            s_task ? (unsigned)uxTaskGetStackHighWaterMark(s_task) * sizeof(StackType_t) : 0);
+    if (s_lost) {
+        printf("zigbee: the network is gone and devices are paired: none formed (\"zbform yes\" forms one)\n");
+    }
     nvs_stats_t ns;
     if (nvs_get_stats(ZB_STORAGE, &ns) == ESP_OK) {
         printf("zb_storage: %u of %u NVS entries used, %u namespaces\n", (unsigned)ns.used_entries,
@@ -618,8 +684,23 @@ bool zb_factory_reset(void)   // false: not on this board
     if (!BOARD_NVS_ERASABLE) {   // the library clears "all the datasets" of a partition the recovery system shares
         return false;
     }
-    esp_zigbee_factory_reset();   // restarts; the declaration does not say noreturn
+    s_form_asked = ZB_FORM_MAGIC;   // the start after this restart forms a new network although devices are paired
+    esp_zigbee_factory_reset();     // restarts; the declaration does not say noreturn
     return true;
+}
+
+bool zb_network_lost(void)
+{
+    return s_lost;
+}
+
+bool zb_form_new(void)   // false: no network is missing
+{
+    if (!s_lost) {
+        return false;
+    }
+    s_form_now = true;
+    return esp_zigbee_task_queue_post(decide_cb, NULL) == ESP_OK;
 }
 
 bool zb_tx_power(const int8_t *set, int8_t *now)   // false: the stack is not up or busy
@@ -883,10 +964,10 @@ esp_err_t zb_color_temp(uint16_t dst, uint8_t ep, uint16_t mired, uint16_t tenth
     // ExecuteIfOff for this command (OptionsMask and OptionsOverride, bit 0 each): a lamp that is off takes the colour
     // temperature and shows it when it is switched on. The class sends it before it switches the lamp on ("colour
     // temperature when switched on") and with KO 7 while the lamp is off. With the mask 0 the lamp's Options attribute
-    // decided, 0 by default, and the value got lost (review B, M1). Whether a lamp heeds the override is the lamp's
-    // affair: one of an older ZCL revision ignores the two octets as before. esp-zigbee-lib 2.0.1 puts both into every
-    // frame (its ezb_zcl_color_control_move_to_color_temperature_cmd_req appends colour temperature, transition time,
-    // mask and override): until now they went out as 00 00.
+    // decided, 0 by default, the value got lost (found in a review). Whether a lamp heeds the override is the lamp's
+    // affair: one of an older ZCL revision ignores the two octets as before. esp-zigbee-lib (seen with 2.0.1) puts
+    // both into every frame (its ezb_zcl_color_control_move_to_color_temperature_cmd_req appends colour temperature,
+    // transition time, mask and override): until now they went out as 00 00.
     ezb_zcl_color_control_move_to_color_temperature_cmd_t cmd = {.cmd_ctrl = cluster_ctrl(dst, ep)};
     cmd.payload.color_temperature_mireds = mired;
     cmd.payload.transition_time = tenths;

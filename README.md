@@ -173,6 +173,19 @@ welcome, see [Concept](#concept).
 
 ## Status
 
+Release 0.6.2 moves to esp-zigbee-lib 2.1.0. Development builds of 0.6.2 were tested on a TUL32 from a bench tool over
+a KNXnet/IP tunnel, not with ETS; the last of them differs from the release only in its version number. The update
+from 0.6.1 kept the Zigbee network and the paired devices, and so did the way back to the application of 0.6.1; a
+two-hour load test with two IKEA lights and a plug (switching, dimming and colour temperature with status feedback,
+reading, eight downloads, some with long frames, no restart); a light that was without power for a while, and a plug
+that was reset and paired anew through the pairing window. With the Zigbee storage erased the gateway started without
+forming a network and reported it (fault, message `NET`); with the storage written back the network was there again.
+`zbform yes` has run in the host tests only, not on a device. With test devices built from examples of the Espressif
+SDK: a device that does not exchange a trust center link key stayed in the network, a device kept its own link key
+over a trust center rejoin, and a Zigbee 4.0 device joined with a dynamic link key. The image of the release was then
+written once with its bootloader and partition table but without erasing, as the web installer does; the network, the
+devices and their applications stayed, and switching worked.
+
 What has run with ETS 6.4.1 on a TUL32 with development builds of 0.6.1: import of the product files in `producer/`
 (0xC000 v4, 0xC001 v5, 0xC002 v6, 0xC003 v4), and updating and downloading the devices of a project, in two steps
 from the versions of 0.6.0. After the update to 0xC002 v6 that light did not run until the gateway was restarted; the
@@ -190,13 +203,15 @@ On a TULX32, powered from the bus, a development build of 0.6.1 ran a two-hour l
 joined through the pairing window: switching with status feedback, reading, eight downloads, four of them with long
 frames, no restart. The image of release 0.6.1 started there, formed its network and, without a Zigbee device joined,
 took downloads from a bench tool instead of ETS: the gateway's application, then the plug and the white spectrum light
-applications with long frames (the latter seven times, no restart). On the TULX32 the firmware caps the Zigbee
-transmit power at 18 dBm: at 20 dBm the bus supply did not hold while the radio sent. Not tried on the TULX32: ETS
-itself, pairing from ETS, the button S1, and the way back through its recovery system; its bus current with Zigbee
-running has not been measured.
+applications with long frames (the latter seven times, no restart). The image of release 0.6.2 took over a network
+formed there by 0.6.1, kept the gateway's KNX devices and took five downloads, again without a Zigbee device joined.
+On the TULX32 the firmware caps the Zigbee
+transmit power at 18 dBm: at 20 dBm the bus supply did not hold while the radio sent. Not tried on the TULX32: a
+Zigbee device with 0.6.2 (the last run with one was a development build of 0.6.1), ETS itself, pairing from ETS, the
+button S1, and the way back through its recovery system; its bus current with Zigbee running has not been measured.
 
-Not done yet: pairing from ETS with 0.6.1 (last run with 0.6.0; the pairing window ran with development builds of
-0.6.1), the pairing window opened by the gateway's button, the remote class with ETS, long frames through line couplers
+Not done yet: ETS with 0.6.2, pairing from ETS with 0.6.1 or 0.6.2 (last run with 0.6.0; the pairing window ran with
+development builds of 0.6.1 and 0.6.2), the pairing window opened by the gateway's button, the remote class with ETS, long frames through line couplers
 and USB interfaces, ETS with a TULX32 (see above), and installations with more than a few real Zigbee devices. Known
 issues are listed in [docs/getting-started.md](docs/getting-started.md#known-limitations).
 

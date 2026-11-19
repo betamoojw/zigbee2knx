@@ -101,6 +101,7 @@ bool vdev_replace(int i, uint16_t zaddr, const uint8_t ieee[8]);   // a new Zigb
 bool vdev_gw_prog(void);                                // is the gateway's own device in programming mode?
 bool vdev_vprog(void);                                  // ... or one of the virtual devices? (for the LED)
 void vdev_counts(int *bound, int *waiting);             // Zigbee devices with and without an individual address
+bool vdev_loaded(void);                                 // every record was read at the start (zbstart.h)
 void vdev_test_refuse(uint8_t err);                     // console: the next check at LoadCompleted fails with err
 // The Zigbee device with this IEEE address announced itself with these MAC capability flags (bit 3: receiver on when
 // idle). Kept in its record: a sleepy end device must not count as gone because it does not answer at once.
@@ -151,7 +152,8 @@ enum {
     GW_NOTE_STORE,         // a record does not get into the flash (partition full or failing), or there is no storage
     GW_NOTE_DUP,           // an individual address another of our devices has already: not taken
     GW_NOTE_GROUPS,        // more different group addresses than the link acknowledges (KNX_ACK_GA_MAX)
-    GW_NOTE_LAST = GW_NOTE_GROUPS
+    GW_NOTE_NET,           // the Zigbee network is gone while devices are paired: not formed anew (zbstart.h)
+    GW_NOTE_LAST = GW_NOTE_NET
 };
 void gw_note(int kind, uint16_t ia, uint8_t err, const char *why);
 
@@ -190,6 +192,8 @@ esp_err_t zb_permit_join(uint8_t seconds);
 esp_err_t zb_permit_join_as(uint8_t seconds, bool own);   // own false: as if a device on the network had opened it
 bool      zb_up(void);   // the network is formed or restored: commands can go out
 bool      zb_factory_reset(void);   // erases the network and restarts; false: refused on this board (TULX32)
+bool      zb_network_lost(void);    // the stack started without its network and devices are paired: none formed
+bool      zb_form_new(void);        // console "zbform yes": form a new network after all; false: none is missing
 bool      zb_tx_power(const int8_t *set, int8_t *now);   // set NULL: only read; false: the stack is not up
 // ZCL client from our endpoint to a device by short address; answers and reports show up in the log
 esp_err_t zb_onoff(uint16_t dst, uint8_t ep, int what);   // 0 off, 1 on, 2 toggle
